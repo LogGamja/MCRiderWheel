@@ -293,15 +293,6 @@ public final class SdlForceFeedback {
 		return 0;
 	}
 
-	/** Live SDL_HapticGetEffectStatus for the centering effect - the -99/-98/-97 codes are this method's own "invalid handle/no haptic/no effect yet" cases, not SDL's. */
-	public static int mcrider_ffb_effect_status(int handle) {
-		Handle h = handleAt(handle);
-		if (h == null) return -99;
-		if (h.haptic == null) return -98;
-		if (h.effectId < 0) return -97;
-		return SdlHaptic.SDL_HapticGetEffectStatus(h.haptic, h.effectId);
-	}
-
 	/**
 	 * Explicitly Stop()s then Run()s the centering effect already in place,
 	 * regardless of what SDL_HapticGetEffectStatus claims - this is the

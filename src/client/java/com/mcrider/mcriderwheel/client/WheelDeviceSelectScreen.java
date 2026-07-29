@@ -78,8 +78,8 @@ public class WheelDeviceSelectScreen extends Screen {
 		rebuildWidgets();
 	}
 
-	/** Every currently-connected device that already has a saved WheelProfile, in SDL's own enumeration order. Package-visible so WheelSettingsScreen can decide whether picking between them is even relevant. */
-	static List<String> calibratedConnectedGuids() {
+	/** Every currently-connected device that already has a saved WheelProfile, in SDL's own enumeration order. */
+	private static List<String> calibratedConnectedGuids() {
 		List<String> guids = new ArrayList<>();
 		int count = SdlJoystickReader.deviceCount();
 		for (int i = 0; i < count; i++) {

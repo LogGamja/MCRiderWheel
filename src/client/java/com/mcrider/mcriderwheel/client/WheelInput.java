@@ -116,13 +116,29 @@ public class WheelInput {
 		if (p.steerAxis < 0 || p.steerAxis >= SdlJoystickReader.axisCount()) return 0f;
 		float v = SdlJoystickReader.axisValue(p.steerAxis);
 		float c = p.steerCenter;
-		if (v >= c) {
+		if (isTowardRight(v, p)) {
 			float span = p.steerRight - c;
 			return Math.abs(span) < 1e-4f ? 0f : clamp((v - c) / span, -1f, 1f);
 		} else {
 			float span = c - p.steerLeft;
 			return Math.abs(span) < 1e-4f ? 0f : clamp((v - c) / span, -1f, 1f);
 		}
+	}
+
+	/**
+	 * Which captured lock (steerRight vs steerLeft) the raw reading {@code v}
+	 * is actually closer to. Not "v >= steerCenter": that assumes steerRight
+	 * always sits on the raw-increasing side of center, which is only true
+	 * for a "normal" axis polarity. On a reversed axis (turning right
+	 * decreases the raw value), steerRight is captured *below* center, so
+	 * "v >= c" would misroute a genuine right turn into the left-lock's span
+	 * - same sign by coincidence (both span and diff flip together), but the
+	 * wrong span's magnitude, which is wrong whenever the two locks aren't
+	 * symmetric. Comparing raw distance to each captured extreme instead is
+	 * polarity-agnostic.
+	 */
+	private static boolean isTowardRight(float v, WheelProfile p) {
+		return Math.abs(v - p.steerRight) <= Math.abs(v - p.steerLeft);
 	}
 
 	// The soft-lock "wall" reaches full strength this many degrees past the
@@ -138,7 +154,7 @@ public class WheelInput {
 		float c = p.steerCenter;
 		float lockRaw;
 		float physRaw;
-		if (v >= c) {
+		if (isTowardRight(v, p)) {
 			lockRaw = Math.abs(p.steerRight - c);
 			physRaw = Math.abs(p.steerPhysicalRight - c);
 		} else {

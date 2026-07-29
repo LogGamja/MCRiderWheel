@@ -16,8 +16,7 @@ import io.github.libsdl4j.api.joystick.SdlJoystickConst;
  * fix GLFW's Windows DirectInput backend misreporting buttons past index 32
  * on devices with large button counts - confirmed against this project's
  * own hardware via raw-HID-level logging that showed the device itself is
- * stable and the corruption happens in GLFW/DirectInput's parsing layer
- * (see PADDLE_SHIFTER_DEBUG_HANDOFF.md).
+ * stable and the corruption happens in GLFW/DirectInput's parsing layer.
  * Axes/hats/enumeration were never observed to have that specific bug, but
  * were moved over anyway for one consistent input path instead of splitting
  * reads of the same physical device across two libraries.
@@ -38,6 +37,26 @@ public final class SdlJoystickReader {
 	private static boolean sdlInitFailureLogged;
 	private static SDL_Joystick openJoystick;
 	private static String openGuid;
+	// checkConnections()/WheelInput.tick() each call into this class several
+	// times per client tick (deviceCount(), open(), update()) - until now
+	// every one of those issued its own native SDL_JoystickUpdate() (a full
+	// DirectInput poll), so a single tick fired 3-4 redundant polls back to
+	// back with no other work between them. Debouncing by a few ms - well
+	// under a client tick (50ms) and well over the sub-millisecond gap
+	// between these same-tick calls - collapses them into one real poll per
+	// tick without every call site needing to track tick boundaries itself,
+	// while still guaranteeing a genuinely fresh poll by the next tick.
+	private static long lastNativeUpdateNanos = Long.MIN_VALUE / 2;
+	private static final long UPDATE_DEBOUNCE_NANOS = 5_000_000L; // 5ms
+
+	private static void pollIfStale() {
+		if (!sdlInitialized) return;
+		long now = System.nanoTime();
+		if (now - lastNativeUpdateNanos >= UPDATE_DEBOUNCE_NANOS) {
+			SdlJoystick.SDL_JoystickUpdate();
+			lastNativeUpdateNanos = now;
+		}
+	}
 
 	private SdlJoystickReader() {
 	}
@@ -77,7 +96,7 @@ public final class SdlJoystickReader {
 		// Refreshed here (not just relying on the caller's own per-tick
 		// update()) so SDL_JoystickGetAttached below reflects a disconnect
 		// that happened since the last update() call, not stale state.
-		SdlJoystick.SDL_JoystickUpdate();
+		pollIfStale();
 		if (openJoystick != null && guid.equalsIgnoreCase(openGuid)) {
 			// A same-GUID fast path alone can't tell "still the same live
 			// device" apart from "this GUID was unplugged and replugged" -
@@ -148,7 +167,7 @@ public final class SdlJoystickReader {
 	/** Number of joystick devices SDL currently sees, present or not (not just the one this class has open). */
 	public static int deviceCount() {
 		if (!ensureSdlInit()) return 0;
-		SdlJoystick.SDL_JoystickUpdate();
+		pollIfStale();
 		return SdlJoystick.SDL_NumJoysticks();
 	}
 
@@ -235,8 +254,12 @@ public final class SdlJoystickReader {
 	 * GLFW (whose joystick reads are always live), SDL's joystick state
 	 * only refreshes on an explicit SDL_JoystickUpdate() call when the SDL
 	 * event loop/SDL_PollEvent isn't being used, which it isn't here.
+	 * Debounced like every other caller into pollIfStale() - safe to call
+	 * this more than once within the same tick (several call sites already
+	 * do, indirectly via deviceCount()/open()) without spending an extra
+	 * native poll on it.
 	 */
 	public static void update() {
-		if (sdlInitialized) SdlJoystick.SDL_JoystickUpdate();
+		pollIfStale();
 	}
 }

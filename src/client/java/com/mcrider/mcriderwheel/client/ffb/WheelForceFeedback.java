@@ -102,6 +102,12 @@ public final class WheelForceFeedback {
 	private WheelForceFeedback() {
 	}
 
+	// Set once an SDL FFB init failure has been logged, so ensureSdlAvailable()
+	// retrying every tick (see its own doc comment) doesn't also spam the log
+	// every tick - only the first failure is reported, same pattern as
+	// SdlJoystickReader.ensureSdlInit()'s own sdlInitFailureLogged.
+	private static boolean sdlInitFailureLogged;
+
 	public static void init() {
 		// Unlike the old native/mcrider_ffb.c + JNA path (a separate .dll
 		// that could fail to load), this touches libsdl4j's own bundled SDL2
@@ -110,16 +116,37 @@ public final class WheelForceFeedback {
 		// this call both forces that load attempt now (rather than
 		// surprising enable() with it later) and doubles as SdlForceFeedback's
 		// own SDL_InitSubSystem(JOYSTICK|HAPTIC) call.
-		try {
-			sdlAvailable = SdlForceFeedback.mcrider_ffb_init() == 0;
-		} catch (Throwable t) {
-			WheelClientMain.LOGGER.error("[FFB] failed to load/initialize SDL force feedback", t);
-			sdlAvailable = false;
-		}
+		ensureSdlAvailable();
 	}
 
-	public static boolean isNativeAvailable() {
-		return sdlAvailable;
+	/**
+	 * Previously a failed init() latched sdlAvailable = false forever - tick()
+	 * bailed on that flag as its very first check, so a momentary failure
+	 * (e.g. the native lib not finished extracting/loading yet) permanently
+	 * disabled force feedback for the rest of the session with no retry, the
+	 * same bug SdlJoystickReader.ensureSdlInit() already fixed on the
+	 * joystick side. Retrying here every tick until it succeeds (or a real
+	 * nativeFaulted trips) matches that same self-healing approach.
+	 */
+	private static boolean ensureSdlAvailable() {
+		if (sdlAvailable) return true;
+		try {
+			if (SdlForceFeedback.mcrider_ffb_init() == 0) {
+				sdlAvailable = true;
+				return true;
+			}
+		} catch (Throwable t) {
+			if (!sdlInitFailureLogged) {
+				sdlInitFailureLogged = true;
+				WheelClientMain.LOGGER.error("[FFB] failed to load/initialize SDL force feedback", t);
+			}
+			return false;
+		}
+		if (!sdlInitFailureLogged) {
+			sdlInitFailureLogged = true;
+			WheelClientMain.LOGGER.error("[FFB] failed to initialize SDL force feedback: {}", SdlForceFeedback.mcrider_ffb_last_error());
+		}
+		return false;
 	}
 
 	/** Set from VehicleDirectionDebug: whether the movement/direction-entity yaw mismatch currently exceeds its threshold. */
@@ -324,7 +351,7 @@ public final class WheelForceFeedback {
 	 * (0% = no output) is what used to be the toggle.
 	 */
 	public static void tick() {
-		if (!sdlAvailable || nativeFaulted) return;
+		if (nativeFaulted || !ensureSdlAvailable()) return;
 
 		boolean windowActive = Minecraft.getInstance().isWindowActive();
 		if (windowActive && !wasWindowActive && enabled) {
@@ -336,8 +363,12 @@ public final class WheelForceFeedback {
 			// that actually fails - a genuine un-acquire makes it fail, while a
 			// spurious focus blip (where the device was never really lost)
 			// succeeds and costs nothing.
-			if (handle >= 0 && SdlForceFeedback.mcrider_ffb_restart_effect(handle) != 0) {
-				disable("window focus regained, reopening so DirectInput reacquires");
+			try {
+				if (handle >= 0 && SdlForceFeedback.mcrider_ffb_restart_effect(handle) != 0) {
+					disable("window focus regained, reopening so DirectInput reacquires");
+				}
+			} catch (Throwable t) {
+				onNativeFault("restart_effect (focus regain)", t);
 			}
 		}
 		wasWindowActive = windowActive;
@@ -347,10 +378,17 @@ public final class WheelForceFeedback {
 		// (wheel switched in WheelDeviceSelectScreen, a second device
 		// calibrated, preferred GUID changed) - close so the block below
 		// reopens on whatever WheelInput is actually reading now.
-		if (enabled && enabledGuid != null && !enabledGuid.equals(WheelInput.activeGuid)) {
+		// equalsIgnoreCase, not equals - see WheelConfig's own doc comment on
+		// why every GUID comparison in this mod is case-insensitive (SDL's
+		// GUID string casing isn't guaranteed stable). enabledGuid comes from
+		// a saved profile.guid and activeGuid from live SDL enumeration; an
+		// equals() mismatch on nothing but casing would disable() and reopen
+		// the same device every single tick - the exact 20Hz DirectInput
+		// open/close storm ENABLE_ARM_DELAY_NANOS exists to prevent.
+		if (enabled && enabledGuid != null && !enabledGuid.equalsIgnoreCase(WheelInput.activeGuid)) {
 			disable("active wheel changed to " + WheelInput.activeGuid);
 		}
-		boolean alreadyFailed = profile != null && profile.guid != null && profile.guid.equals(failedGuid);
+		boolean alreadyFailed = profile != null && profile.guid != null && profile.guid.equalsIgnoreCase(failedGuid);
 		if (WheelInput.available) {
 			// Restart the settle window whenever the target device changes, not
 			// just on disable(): opening a device for haptics while SDL is still

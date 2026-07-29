@@ -100,6 +100,14 @@ public class WheelCalibrationScreen extends Screen {
 
 	private final Scope scope;
 	private final Screen parent;
+	// Whether this instance was opened by WheelClientMain's own join/hotplug
+	// prompt rather than picked from the pause-menu settings screen - see
+	// onClose()'s use of this.
+	private final boolean autoTriggered;
+	// Set once the wizard actually reaches Step.DONE (see goTo()) - not set
+	// on a mid-wizard bailout (ESC, [나가기]), which is exactly the case
+	// onClose() needs to tell apart for autoTriggered's decline handling.
+	private boolean reachedDone;
 	private Step step = Step.INTRO;
 	private String selectedGuid;
 
@@ -181,14 +189,20 @@ public class WheelCalibrationScreen extends Screen {
 	// still lists every device as plain text regardless of this cap.
 	private static final int MAX_SELECTABLE_DEVICE_BUTTONS = 6;
 
+	/** Opened by WheelClientMain's own auto-calibration prompt (join/hotplug), not from the settings screen - see the autoTriggered field. */
 	public WheelCalibrationScreen() {
-		this(Scope.FULL, null);
+		this(Scope.FULL, null, true);
 	}
 
 	public WheelCalibrationScreen(Scope scope, Screen parent) {
+		this(scope, parent, false);
+	}
+
+	private WheelCalibrationScreen(Scope scope, Screen parent, boolean autoTriggered) {
 		super(Component.literal("MCRider Wheel Calibration"));
 		this.scope = scope;
 		this.parent = parent;
+		this.autoTriggered = autoTriggered;
 	}
 
 	@Override
@@ -287,6 +301,17 @@ public class WheelCalibrationScreen extends Screen {
 
 	@Override
 	public void onClose() {
+		if (autoTriggered && !reachedDone && selectedGuid != null) {
+			// The player backed out (ESC, or [나가기]) of a wizard WE opened
+			// automatically, without ever finishing it - remember that so this
+			// same uncalibrated device stops re-opening the wizard on every
+			// future world join/hotplug (see WheelClientMain's
+			// anyUncalibratedJoystickPresent()/checkConnections()). Doesn't
+			// affect calibrating it later from the settings screen: once it's
+			// actually driveable it no longer counts as "uncalibrated" at all,
+			// regardless of this flag.
+			WheelConfig.declineAutoCalibration(selectedGuid);
+		}
 		if (parent != null) {
 			minecraft.setScreen(parent);
 		} else {
@@ -377,6 +402,7 @@ public class WheelCalibrationScreen extends Screen {
 	private void goTo(Step next) {
 		if (next == Step.DONE) {
 			completeAndSave();
+			reachedDone = true;
 		}
 		step = next;
 	}

@@ -102,7 +102,7 @@ public class WheelClientMain implements ClientModInitializer {
 		int count = SdlJoystickReader.deviceCount();
 		for (int i = 0; i < count; i++) {
 			String guid = SdlJoystickReader.deviceGuid(i);
-			if (guid == null) continue;
+			if (guid == null || WheelConfig.isAutoCalibrationDeclined(guid)) continue;
 			WheelProfile profile = WheelConfig.get(guid);
 			if (profile == null || !profile.isDriveable()) {
 				return true;
@@ -149,7 +149,8 @@ public class WheelClientMain implements ClientModInitializer {
 				say(client, "[MCRiderWheel] joystick connected: " + name + " (guid=" + guid + ")");
 
 				WheelProfile profile = WheelConfig.get(guid);
-				if ((profile == null || !profile.isDriveable()) && !anyCalibratedJoystickPresent()) {
+				if ((profile == null || !profile.isDriveable()) && !anyCalibratedJoystickPresent()
+						&& !WheelConfig.isAutoCalibrationDeclined(guid)) {
 					pendingAutoCalibration = true;
 				}
 			}

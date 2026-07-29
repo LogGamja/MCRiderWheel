@@ -52,7 +52,7 @@ dependencies {
 	// the Controllable mod's own bootstrap code, which this project doesn't
 	// have. Plain libsdl4j has no such dependency.)
 	// Both button reads (SdlJoystickReader, replacing GLFW's buggy >32-button
-	// DirectInput path - see PADDLE_SHIFTER_DEBUG_HANDOFF.md) and force
+	// DirectInput path - see that class's own doc comment) and force
 	// feedback (SdlForceFeedback, confirmed working on real hardware - see
 	// that class's doc comment) run through this. The old native/src/
 	// mcrider_ffb.c + FfbNative/FfbNativeLoader JNA path this replaced has

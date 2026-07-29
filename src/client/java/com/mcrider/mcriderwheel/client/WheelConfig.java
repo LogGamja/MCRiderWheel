@@ -31,6 +31,12 @@ public class WheelConfig {
 	private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("mcriderwheel-config.json");
 	private static Map<String, WheelProfile> profiles;
 	private static String preferredGuid;
+	// GUIDs the player has dismissed the auto-calibration wizard for (see
+	// WheelCalibrationScreen's autoTriggered handling) without finishing it -
+	// without this, an uncalibrated gamepad/second device left plugged in
+	// re-prompts on every single world join/hotplug forever, since nothing
+	// else ever marks it as "already asked about this one".
+	private static java.util.Set<String> declinedAutoCalibrationGuids;
 
 	/**
 	 * Every caller elsewhere in the mod compares GUIDs with equalsIgnoreCase
@@ -55,6 +61,7 @@ public class WheelConfig {
 	private static void ensureLoaded() {
 		if (profiles != null) return;
 		profiles = new HashMap<>();
+		declinedAutoCalibrationGuids = new java.util.HashSet<>();
 		if (Files.exists(FILE)) {
 			try (Reader r = Files.newBufferedReader(FILE)) {
 				JsonObject root = GSON.fromJson(r, JsonObject.class);
@@ -66,6 +73,15 @@ public class WheelConfig {
 						putAllNormalized(loaded);
 						if (root.has("preferredGuid") && !root.get("preferredGuid").isJsonNull()) {
 							preferredGuid = normalize(root.get("preferredGuid").getAsString());
+						}
+						if (root.has("declinedAutoCalibration")) {
+							Type guidSetType = new TypeToken<java.util.Set<String>>() {}.getType();
+							java.util.Set<String> loadedDeclined = GSON.fromJson(root.get("declinedAutoCalibration"), guidSetType);
+							if (loadedDeclined != null) {
+								for (String guid : loadedDeclined) {
+									declinedAutoCalibrationGuids.add(normalize(guid));
+								}
+							}
 						}
 					} else {
 						// Pre-existing files saved before preferredGuid was added: the
@@ -107,6 +123,20 @@ public class WheelConfig {
 		writeToDisk();
 	}
 
+	/** Whether the player has already dismissed the auto-calibration wizard for this device without finishing it - see WheelCalibrationScreen's autoTriggered handling. */
+	public static boolean isAutoCalibrationDeclined(String guid) {
+		ensureLoaded();
+		return guid != null && declinedAutoCalibrationGuids.contains(normalize(guid));
+	}
+
+	/** Marks this device as "already asked" so the auto-calibration wizard stops offering to calibrate it on every join/hotplug. */
+	public static void declineAutoCalibration(String guid) {
+		ensureLoaded();
+		if (guid == null) return;
+		declinedAutoCalibrationGuids.add(normalize(guid));
+		writeToDisk();
+	}
+
 	private static void writeToDisk() {
 		try {
 			Files.createDirectories(FILE.getParent());
@@ -114,6 +144,9 @@ public class WheelConfig {
 			root.add("profiles", GSON.toJsonTree(profiles));
 			if (preferredGuid != null) {
 				root.addProperty("preferredGuid", preferredGuid);
+			}
+			if (!declinedAutoCalibrationGuids.isEmpty()) {
+				root.add("declinedAutoCalibration", GSON.toJsonTree(declinedAutoCalibrationGuids));
 			}
 			try (Writer w = Files.newBufferedWriter(FILE)) {
 				GSON.toJson(root, w);
