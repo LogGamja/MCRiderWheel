@@ -13,11 +13,11 @@ import net.minecraft.world.phys.Vec3;
  * MISMATCH_THRESHOLD_DEG, the wheel is made to resist turning harder as a
  * "something's off" cue (see WheelForceFeedback).
  */
-public final class VehicleDirectionDebug {
+public final class DirectionMismatchFeedback {
 	private static final String DIRECTION_ENTITY_NAME = "mcrider-direction";
 	private static final float MISMATCH_THRESHOLD_DEG = 25f;
 
-	private VehicleDirectionDebug() {
+	private DirectionMismatchFeedback() {
 	}
 
 	public static void tick(Minecraft client) {

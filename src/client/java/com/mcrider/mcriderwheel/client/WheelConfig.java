@@ -12,6 +12,7 @@ import java.io.Writer;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -96,7 +97,26 @@ public class WheelConfig {
 				// of the client tick and crash the game instead of just losing
 				// the saved profiles.
 				WheelClientMain.LOGGER.warn("Failed to load wheel config", e);
+				// profiles is whatever partial state survived the failed parse
+				// (possibly empty) - the very next save() call (e.g. right after
+				// calibrating) overwrites this file with just that, permanently
+				// losing any profile the failed parse didn't recover. Backing up
+				// the unreadable file here, before anything can write over it,
+				// is what actually saves it - not a JSON-repair attempt, just a
+				// copy the player can hand-recover from.
+				backupUnreadableFile();
 			}
+		}
+	}
+
+	/** Best-effort copy of the unparseable config file to a sibling .bak, so a failed load doesn't just quietly vanish once the next save() overwrites the original. */
+	private static void backupUnreadableFile() {
+		try {
+			Path backup = FILE.resolveSibling(FILE.getFileName() + ".bak");
+			Files.copy(FILE, backup, StandardCopyOption.REPLACE_EXISTING);
+			WheelClientMain.LOGGER.warn("Backed up unreadable wheel config to {}", backup);
+		} catch (IOException e) {
+			WheelClientMain.LOGGER.warn("Failed to back up unreadable wheel config", e);
 		}
 	}
 

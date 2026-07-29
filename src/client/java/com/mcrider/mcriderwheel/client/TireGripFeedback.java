@@ -18,8 +18,13 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
  * Reading the XP bar alone can't tell a real slide apart from ordinary grip:
  * when the tires actually break loose, engine 1006 resets the gauge down to
  * around 20%, which looks identical to "gripping fine at 20%". The
- * "state-drift" flag is what disambiguates the two, so a real slide always
- * forces full-strength vibration regardless of what the XP bar reads.
+ * "state-drift" flag is what disambiguates the two - while it's set, this
+ * always feeds the full-strength vibration magnitude regardless of what the
+ * XP bar reads, and also reports the wheel as broken loose (see
+ * setTiresBrokenLoose()) so WheelForceFeedback drops centering/the soft-lock
+ * wall out from under that vibration instead of pulling against it - a real
+ * slide gives no restoring torque back through the wheel, but the tires
+ * shaking against the road is still a real, physical cue.
  */
 public final class TireGripFeedback {
 	private static final int GRIP_ENGINE_ID = 1006;
@@ -31,7 +36,7 @@ public final class TireGripFeedback {
 
 	public static void tick(Minecraft client) {
 		if (client.player == null) {
-			WheelForceFeedback.setGripVibrationMagnitude(0f);
+			reset();
 			return;
 		}
 
@@ -40,34 +45,42 @@ public final class TireGripFeedback {
 		// own XP bar, so client.player's is already the right gauge to read either way.
 		Entity vehicle = RiddenVehicle.get(client);
 		if (!(vehicle instanceof LivingEntity livingVehicle)) {
-			WheelForceFeedback.setGripVibrationMagnitude(0f);
+			reset();
 			return;
 		}
 
 		AttributeInstance armor = livingVehicle.getAttribute(Attributes.ARMOR);
 		if (armor == null) {
-			WheelForceFeedback.setGripVibrationMagnitude(0f);
+			reset();
 			return;
 		}
 
 		Double engineId = modifierAmount(armor, "data-engine-real");
 		if (engineId == null || Math.round(engineId) != GRIP_ENGINE_ID) {
-			WheelForceFeedback.setGripVibrationMagnitude(0f);
+			reset();
 			return;
 		}
 
 		Double drifting = modifierAmount(armor, "state-drift");
 		boolean isDrifting = drifting != null && drifting >= 0.5;
+		WheelForceFeedback.setTiresBrokenLoose(isDrifting);
 
 		// A real slide is always fed through as the gauge reading 100%, not
 		// whatever the reset briefly leaves on the XP bar - state-drift is
 		// what actually says the tires are broken loose, the bar doesn't.
+		// WheelForceFeedback renders this magnitude standalone (no centering
+		// underneath it) while tiresBrokenLoose is set - see its own comment.
 		float gripProgress = isDrifting ? 1f : client.player.experienceProgress;
 		float magnitude = gripProgress > GRIP_RAMP_START
 				? (gripProgress - GRIP_RAMP_START) / (1f - GRIP_RAMP_START) * GRIP_RAMP_MAX_MAGNITUDE
 				: 0f;
 
 		WheelForceFeedback.setGripVibrationMagnitude(magnitude);
+	}
+
+	private static void reset() {
+		WheelForceFeedback.setGripVibrationMagnitude(0f);
+		WheelForceFeedback.setTiresBrokenLoose(false);
 	}
 
 	/** Matched by modifier id *path* only (namespace-agnostic) since MCRider's exact namespace for these isn't known here. */

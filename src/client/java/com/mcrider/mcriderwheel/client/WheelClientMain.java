@@ -73,7 +73,7 @@ public class WheelClientMain implements ClientModInitializer {
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			// Each subsystem runs in its own try/catch rather than one around the
-			// whole tick: TireGripFeedback/VehicleDirectionDebug in particular
+			// whole tick: TireGripFeedback/DirectionMismatchFeedback in particular
 			// read MCRider's internal state through ad-hoc, reverse-engineered
 			// heuristics (attribute-modifier IDs, a passenger's display name -
 			// see their own doc comments) that an MCRider update could change
@@ -87,7 +87,7 @@ public class WheelClientMain implements ClientModInitializer {
 			// Both feed WheelForceFeedback's per-tick state (extra resistance /
 			// grip vibration) - must run before WheelForceFeedback.tick() itself
 			// or FFB always renders one tick stale.
-			safeTick("VehicleDirectionDebug", () -> VehicleDirectionDebug.tick(client));
+			safeTick("DirectionMismatchFeedback", () -> DirectionMismatchFeedback.tick(client));
 			safeTick("TireGripFeedback", () -> TireGripFeedback.tick(client));
 			safeTick("WheelForceFeedback", WheelForceFeedback::tick);
 

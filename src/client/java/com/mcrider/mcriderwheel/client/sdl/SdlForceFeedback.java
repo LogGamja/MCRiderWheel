@@ -104,8 +104,12 @@ public final class SdlForceFeedback {
 
 	public static int mcrider_ffb_device_count() {
 		if (!initialized) return 0;
-		SdlJoystick.SDL_JoystickUpdate();
-		return SdlJoystick.SDL_NumJoysticks();
+		try {
+			SdlJoystick.SDL_JoystickUpdate();
+			return SdlJoystick.SDL_NumJoysticks();
+		} catch (Throwable t) {
+			return 0;
+		}
 	}
 
 	public static String mcrider_ffb_device_name(int index) {
@@ -121,9 +125,11 @@ public final class SdlForceFeedback {
 	/**
 	 * Null if the index isn't currently a real device - see
 	 * SdlJoystickReader.deviceGuid() for why a stale index here is a
-	 * JVM-killing access violation rather than a benign miss, and for the
-	 * separate confirmed-by-hs_err reason `guid` needs the
-	 * reachabilityFence below even when the index is perfectly valid.
+	 * JVM-killing access violation rather than a benign miss. The GUID
+	 * struct itself is decoded via SdlJoystickReader.formatJoystickGuid()
+	 * rather than SDL_JoystickGetGUIDString - see that method's own doc
+	 * comment for the separate by-value-marshalling crash that call was
+	 * confirmed to cause.
 	 */
 	public static String mcrider_ffb_device_guid(int index) {
 		if (!isValidDeviceIndex(index)) return null;

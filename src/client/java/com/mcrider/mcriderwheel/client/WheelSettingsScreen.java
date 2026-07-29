@@ -265,8 +265,9 @@ public class WheelSettingsScreen extends Screen {
 	public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
 		boolean wheelConnected = WheelInput.available;
 		// Sliders are constructed in init() reading whatever profile was
-		// active *then* - if no wheel was connected yet, that's the 200%/100%
-		// fallback (see profileOr), not this device's actual saved values.
+		// active *then* - if no wheel was connected yet, that's the 100%
+		// fallback both sliders share (see profileOr), not this device's
+		// actual saved values.
 		// Without this, a wheel connecting later left the handle sitting at
 		// that fallback position forever (just newly draggable), so the
 		// first touch would silently overwrite a real non-default saved

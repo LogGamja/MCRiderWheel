@@ -24,7 +24,7 @@ public final class WheelForceFeedback {
 	private static final float STRENGTH = 0.5f;
 	// Extra centering-force boost applied while the wheel's movement
 	// heading and MCRider's direction-indicator entity disagree by more
-	// than the mismatch threshold (see VehicleDirectionDebug) - makes the
+	// than the mismatch threshold (see DirectionMismatchFeedback) - makes the
 	// wheel noticeably heavier/stiffer as a "something's off" cue.
 	private static final float EXTRA_RESISTANCE_BOOST = 0.2f;
 
@@ -61,6 +61,14 @@ public final class WheelForceFeedback {
 	// it, so nothing ends up felt (see PULSE_COOLDOWN_NANOS's crash-history
 	// comment for why pulse() is touchy about rapid re-calls in general).
 	private static volatile float gripVibrationMagnitude;
+	// Set from TireGripFeedback: true while the tires have actually broken
+	// loose (state-drift, not just a low XP-bar reading). While set,
+	// tick() drops centering and the soft-lock wall entirely - a real car
+	// gives essentially no self-aligning torque back through the wheel once
+	// the tires genuinely lose grip - but keeps rendering gripVibrationMagnitude
+	// as the sole force, since the tires shaking against the road is still a
+	// real, physical cue, unlike the wheel trying to point itself anywhere.
+	private static volatile boolean tiresBrokenLoose;
 	private static int vibrationPhaseTicks;
 	private static final int VIBRATION_HALF_PERIOD_TICKS = 1; // ~10Hz square-wave buzz at the 20Hz client tick rate
 	// Guards against hammering mcrider_ffb_pulse() - e.g. several zombies
@@ -149,14 +157,19 @@ public final class WheelForceFeedback {
 		return false;
 	}
 
-	/** Set from VehicleDirectionDebug: whether the movement/direction-entity yaw mismatch currently exceeds its threshold. */
+	/** Set from DirectionMismatchFeedback: whether the movement/direction-entity yaw mismatch currently exceeds its threshold. */
 	public static void setExtraResistance(boolean active) {
 		extraResistance = active;
 	}
 
-	/** Set from TireGripFeedback: grip-loss vibration strength (0..1), 0 = none. */
+	/** Set from TireGripFeedback: grip-loss vibration strength (0..1), 0 = none. Still rendered while setTiresBrokenLoose(true) is in effect - see that method - just without any centering underneath it. */
 	public static void setGripVibrationMagnitude(float magnitude) {
 		gripVibrationMagnitude = Math.max(0f, Math.min(1f, magnitude));
+	}
+
+	/** Set from TireGripFeedback: true while the tires have actually broken loose - see the tiresBrokenLoose field's own comment. */
+	public static void setTiresBrokenLoose(boolean broken) {
+		tiresBrokenLoose = broken;
 	}
 
 	private static void enable() {
@@ -450,49 +463,67 @@ public final class WheelForceFeedback {
 			return;
 		}
 
-		// Centering is computed first, as a signed value, regardless of grip
-		// vibration - direction=0 <-> sign +1 and direction=180 <-> sign -1
-		// (see mcrider_ffb_set_force's own sign convention), so this and the
-		// vibration's signed swing below can be summed into one net force
-		// instead of grip vibration replacing centering outright.
 		float steering = WheelInput.steering; // -1 (left) .. 1 (right)
-		float centerMagnitude = Math.min(1f, Math.abs(steering) * STRENGTH);
-		// Soft lock: once the wheel is turned past the configured steering
-		// lock (only possible if that lock is narrower than the wheel's
-		// real physical range), ramp the centering force up to full
-		// strength so the end-stop feels like a hard physical wall.
-		float overTravel = WheelInput.steerOverTravel;
-		if (overTravel > 0f) {
-			centerMagnitude = centerMagnitude + (1f - centerMagnitude) * overTravel;
-		}
-		if (extraResistance) {
-			centerMagnitude = Math.min(1f, centerMagnitude + EXTRA_RESISTANCE_BOOST);
-		}
-		centerMagnitude = Math.min(1f, centerMagnitude * strengthMultiplier());
-		float centerSigned = steering >= 0 ? centerMagnitude : -centerMagnitude;
 
 		float magnitude;
 		float direction;
-		if (gripVibrationMagnitude > 0f) {
-			// Overlaid on top of centering rather than replacing it - a slide
-			// with the wheel's restoring pull switched off entirely reads as
-			// the wheel going limp, not as losing grip. Summing the
-			// vibration's signed swing onto centerSigned keeps some pull
-			// toward center alive underneath the buzz.
+		if (tiresBrokenLoose) {
+			// Tires actually broken loose: centering and the soft-lock wall
+			// both drop out entirely - a real slide gives no restoring torque
+			// back through the wheel at all - but gripVibrationMagnitude still
+			// renders on its own, undiluted by any centering pull, as an
+			// oscillating direction rather than a steady one. See the
+			// tiresBrokenLoose field's own comment.
 			float vibMagnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
 			vibrationPhaseTicks++;
 			boolean phaseHigh = (vibrationPhaseTicks / VIBRATION_HALF_PERIOD_TICKS) % 2 == 0;
-			float vibSigned = phaseHigh ? vibMagnitude : -vibMagnitude;
-			float netSigned = Math.max(-1f, Math.min(1f, centerSigned + vibSigned));
-			magnitude = Math.abs(netSigned);
-			direction = netSigned >= 0 ? 0f : 180f;
+			magnitude = vibMagnitude;
+			direction = phaseHigh ? 0f : 180f;
 		} else {
-			magnitude = centerMagnitude;
-			// Push opposite to the turn direction so the wheel self-centers
-			// instead of reinforcing the turn - measured against the real
-			// device, this is the correct sign (do not "simplify" back to
-			// matching steering's sign without retesting on hardware).
-			direction = steering >= 0 ? 0f : 180f;
+			// Centering is computed first, as a signed value, regardless of
+			// grip vibration - direction=0 <-> sign +1 and direction=180 <->
+			// sign -1 (see mcrider_ffb_set_force's own sign convention), so
+			// this and the vibration's signed swing below can be summed into
+			// one net force instead of grip vibration replacing centering
+			// outright.
+			float centerMagnitude = Math.min(1f, Math.abs(steering) * STRENGTH);
+			// Soft lock: once the wheel is turned past the configured steering
+			// lock (only possible if that lock is narrower than the wheel's
+			// real physical range), ramp the centering force up to full
+			// strength so the end-stop feels like a hard physical wall.
+			float overTravel = WheelInput.steerOverTravel;
+			if (overTravel > 0f) {
+				centerMagnitude = centerMagnitude + (1f - centerMagnitude) * overTravel;
+			}
+			if (extraResistance) {
+				centerMagnitude = Math.min(1f, centerMagnitude + EXTRA_RESISTANCE_BOOST);
+			}
+			centerMagnitude = Math.min(1f, centerMagnitude * strengthMultiplier());
+			float centerSigned = steering >= 0 ? centerMagnitude : -centerMagnitude;
+
+			if (gripVibrationMagnitude > 0f) {
+				// This is the ramped, still-gripping case (XP bar declining
+				// toward a slide, but state-drift not actually confirmed yet -
+				// see TireGripFeedback) - overlaid on top of centering rather
+				// than replacing it, since the tires haven't really broken
+				// loose here. Summing the vibration's signed swing onto
+				// centerSigned keeps some pull toward center alive underneath
+				// the buzz.
+				float vibMagnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
+				vibrationPhaseTicks++;
+				boolean phaseHigh = (vibrationPhaseTicks / VIBRATION_HALF_PERIOD_TICKS) % 2 == 0;
+				float vibSigned = phaseHigh ? vibMagnitude : -vibMagnitude;
+				float netSigned = Math.max(-1f, Math.min(1f, centerSigned + vibSigned));
+				magnitude = Math.abs(netSigned);
+				direction = netSigned >= 0 ? 0f : 180f;
+			} else {
+				magnitude = centerMagnitude;
+				// Push opposite to the turn direction so the wheel self-centers
+				// instead of reinforcing the turn - measured against the real
+				// device, this is the correct sign (do not "simplify" back to
+				// matching steering's sign without retesting on hardware).
+				direction = steering >= 0 ? 0f : 180f;
+			}
 		}
 		try {
 			int result = SdlForceFeedback.mcrider_ffb_set_force(handle, magnitude, direction);

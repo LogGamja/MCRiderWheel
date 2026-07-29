@@ -153,10 +153,14 @@ public class WheelCalibrationScreen extends Screen {
 	// the player can press-and-release, then click [확인] separately.
 	private InputBinding pendingBinding;
 	private boolean awaitingConfirm;
-	// Per-axis peak deviation as of the moment a button/HAT candidate became
-	// pending - the bar an axis has to clear to take that candidate over. See
-	// the nonAxisPending branch in checkInputCapture().
+	// Per-axis peak deviation already standing when the current capture
+	// opportunity opened (a new step, or a button/HAT candidate becoming
+	// pending) - the bar an axis has to clear on top of AXIS_CAPTURE_DELTA
+	// before it counts as a fresh press. See checkInputCapture().
 	private float[] axisOverrideFloor;
+	// Step axisOverrideFloor was last taken for, so every capture step starts
+	// against its own floor rather than inheriting the previous step's.
+	private Step axisFloorStep;
 
 	// Raw diagnostics for figuring out which physical control an
 	// unrecognized input actually is - runs alongside (and independently of)
@@ -601,6 +605,21 @@ public class WheelCalibrationScreen extends Screen {
 		captureAxisBaselineOnce();
 		updateRawEventDiagnostic();
 
+		// Re-floor once per step, before this tick's own axis motion is
+		// folded into axisPeakDeviation below - otherwise an axis that's been
+		// sitting elevated since a *previous* step (a rotary dial/H-shifter
+		// with no spring return, left turned away from rest) carries that same
+		// stale peak straight into a brand new step and wins the very first
+		// tick with no real input at all, since nothing was gating it outside
+		// of an already-pending button/HAT candidate (see the old
+		// nonAxisPending-only check this replaced). Snapshotting here instead
+		// of only when a button/HAT candidate shows up covers that gap while
+		// still only resetting the floor when the step itself actually changes.
+		if (axisFloorStep != step) {
+			snapshotAxisOverrideFloor();
+			axisFloorStep = step;
+		}
+
 		int buttonCount = SdlJoystickReader.buttonCount();
 		if (prevCaptureButtonsDown == null || prevCaptureButtonsDown.length != buttonCount) {
 			boolean[] seeded = new boolean[buttonCount];
@@ -688,20 +707,20 @@ public class WheelCalibrationScreen extends Screen {
 			}
 		}
 
-		// With a button/HAT candidate already pending, an axis has to show
-		// motion *new since that candidate was captured* to take it over - not
-		// merely be above the threshold. An axis that's simply been sitting
-		// elevated since some earlier tick (a rotary dial with no spring
-		// return, left turned away from rest) never returns to rest, so its
-		// peak deviation stays high forever; letting that count would have it
-		// steal the candidate back every tick, and no button could ever be
-		// confirmed on such a device. Measuring against the peak recorded at
-		// capture time (see snapshotAxisOverrideFloor) leaves a stuck axis
-		// unable to grow past its own floor, while a pedal the player actually
-		// presses afterwards clears it easily - which is what makes correcting
-		// a mis-pressed button with an analog input possible.
-		boolean nonAxisPending = awaitingConfirm && pendingBinding != null && pendingBinding.axisIndex < 0;
-
+		// An axis has to show motion *new since its floor was last taken* to
+		// become (or steal) a candidate - not merely be above the threshold.
+		// Applied unconditionally now, not just while a button/HAT candidate
+		// is pending: the floor is re-taken once per step (see the
+		// axisFloorStep check above), so an axis that's simply been sitting
+		// elevated since before this step began - a rotary dial/H-shifter
+		// with no spring return, left turned away from rest, whose peak
+		// deviation never resets - can't win the very first tick of a new
+		// step with zero real input. It's then raised again the moment a
+		// button/HAT candidate is captured (see snapshotAxisOverrideFloor's
+		// call sites above), so a stuck axis can't steal that candidate back
+		// either, while a pedal the player actually presses afterwards clears
+		// both floors easily - which is what makes correcting a mis-pressed
+		// button with an analog input possible.
 		int axisCandidate = -1;
 		float axisCandidateValue = 0f;
 		if (axisPeakDeviation != null) {
@@ -709,10 +728,8 @@ public class WheelCalibrationScreen extends Screen {
 			int count = Math.min(SdlJoystickReader.axisCount(), axisPeakDeviation.length);
 			for (int i = 0; i < count; i++) {
 				if (isExcludedAxis(i)) continue;
-				if (nonAxisPending) {
-					float floor = axisOverrideFloor != null && i < axisOverrideFloor.length ? axisOverrideFloor[i] : 0f;
-					if (axisPeakDeviation[i] <= floor + AXIS_CAPTURE_DELTA) continue;
-				}
+				float floor = axisOverrideFloor != null && i < axisOverrideFloor.length ? axisOverrideFloor[i] : 0f;
+				if (axisPeakDeviation[i] <= floor + AXIS_CAPTURE_DELTA) continue;
 				if (axisPeakDeviation[i] > bestDeviation) {
 					bestDeviation = axisPeakDeviation[i];
 					axisCandidate = i;
