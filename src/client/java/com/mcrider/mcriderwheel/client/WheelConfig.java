@@ -157,7 +157,35 @@ public class WheelConfig {
 		writeToDisk();
 	}
 
+	/**
+	 * Clears a previously-declined device's "already asked" flag - called from
+	 * WheelCalibrationScreen when the player actually advances past its INTRO
+	 * step for this device, i.e. a fresh, active decision to work on it now.
+	 * Without this there was no way back from one accidental/changed-mind
+	 * decline short of hand-editing the config file: declineAutoCalibration()
+	 * is the only other place that ever touches this set, and it's one-way.
+	 */
+	public static void clearAutoCalibrationDecline(String guid) {
+		ensureLoaded();
+		if (guid == null) return;
+		if (declinedAutoCalibrationGuids.remove(normalize(guid))) {
+			writeToDisk();
+		}
+	}
+
+	/**
+	 * Writes through a sibling .tmp file plus an atomic rename rather than
+	 * truncating FILE directly - this project has a documented history of the
+	 * whole process dying to an uncatchable native access violation (see
+	 * SdlJoystickReader/SdlForceFeedback's own doc comments), and a truncate-
+	 * in-place write straddled by exactly that kind of crash would leave every
+	 * saved profile permanently lost, not just the one save() call in
+	 * progress. Files.move with ATOMIC_MOVE makes the rename itself all-or-
+	 * nothing so FILE is always either the old complete contents or the new
+	 * complete contents, never a half-written truncation.
+	 */
 	private static void writeToDisk() {
+		Path tmp = FILE.resolveSibling(FILE.getFileName() + ".tmp");
 		try {
 			Files.createDirectories(FILE.getParent());
 			JsonObject root = new JsonObject();
@@ -168,8 +196,19 @@ public class WheelConfig {
 			if (!declinedAutoCalibrationGuids.isEmpty()) {
 				root.add("declinedAutoCalibration", GSON.toJsonTree(declinedAutoCalibrationGuids));
 			}
-			try (Writer w = Files.newBufferedWriter(FILE)) {
+			try (Writer w = Files.newBufferedWriter(tmp)) {
 				GSON.toJson(root, w);
+			}
+			try {
+				Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			} catch (java.nio.file.AtomicMoveNotSupportedException e) {
+				// Same-filesystem atomic rename isn't guaranteed on every
+				// platform/filesystem combination - a non-atomic replace here
+				// is still strictly better than the old always-truncate path
+				// (the window where FILE could end up truncated shrinks to
+				// just this fallback move itself, not the whole JSON
+				// serialization+write above it).
+				Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING);
 			}
 		} catch (IOException e) {
 			WheelClientMain.LOGGER.warn("Failed to save wheel config", e);

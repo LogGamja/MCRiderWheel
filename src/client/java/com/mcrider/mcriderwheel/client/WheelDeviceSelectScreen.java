@@ -33,6 +33,10 @@ public class WheelDeviceSelectScreen extends Screen {
 	// Set in init(), read back in render() so the notice text can sit right
 	// above the button list regardless of how many calibrated wheels there are.
 	private int listTop;
+	// Set in init(), read back in render() to show an explicit empty-state
+	// message rather than leaving just the [닫기] button with no explanation
+	// of why the list above it is blank.
+	private List<String> guids = new ArrayList<>();
 
 	public WheelDeviceSelectScreen(Screen parent) {
 		super(Component.literal("사용할 휠 선택"));
@@ -41,8 +45,7 @@ public class WheelDeviceSelectScreen extends Screen {
 
 	@Override
 	protected void init() {
-		List<String> guids = calibratedConnectedGuids();
-		String preferredGuid = WheelConfig.getPreferredGuid();
+		guids = calibratedConnectedGuids();
 
 		int btnWidth = Math.min(280, width - 20);
 		int btnHeight = 20;
@@ -53,15 +56,29 @@ public class WheelDeviceSelectScreen extends Screen {
 		for (String guid : guids) {
 			WheelProfile profile = WheelConfig.get(guid);
 			String name = profile.name != null && !profile.name.isEmpty() ? profile.name : guid;
-			// Only the explicit preference is marked. "Currently in use" would
-			// almost always duplicate it (WheelInput picks the preferred device
-			// whenever it's connected), so showing both just reads as noise.
-			String label = name + (guid.equalsIgnoreCase(preferredGuid) ? " [선택됨]" : "");
+			// Marked against WheelInput.activeGuid - the device actually
+			// driving right now - rather than the raw stored preferredGuid.
+			// Those two agree whenever the preferred device is connected, but
+			// once it disconnects, WheelInput silently falls back to whatever
+			// other calibrated wheel is present without ever rewriting
+			// preferredGuid (falling back isn't the same as the player
+			// explicitly choosing that device - see WheelInput.tick()'s own
+			// comment on this). Comparing against the raw preference then left
+			// the device that's actually driving unmarked, with the list
+			// showing nothing as selected at all even though one wheel very
+			// much was.
+			String label = name + (guid.equalsIgnoreCase(WheelInput.activeGuid) ? " [선택됨]" : "");
 			Button btn = Button.builder(Component.literal(label), b -> choose(guid))
 					.bounds(width / 2 - btnWidth / 2, y, btnWidth, btnHeight)
 					.build();
 			addRenderableWidget(btn);
 			y += btnHeight + gap;
+		}
+		if (guids.isEmpty()) {
+			// Room for the "표시할 휠이 없습니다" notice drawn in render(), which
+			// otherwise sits right on top of [닫기] with nothing in the list
+			// above to push it down.
+			y += 16;
 		}
 
 		addRenderableWidget(Button.builder(Component.literal("닫기"), b -> onClose())
@@ -107,6 +124,9 @@ public class WheelDeviceSelectScreen extends Screen {
 		g.drawCenteredString(font, title, width / 2, height / 2 - 90, 0xFFFFFF);
 		g.drawCenteredString(font, Component.literal("조향 보정을 마치지 않은 휠은 표시되지 않습니다"),
 				width / 2, listTop - 16, 0xAAAAAA);
+		if (guids.isEmpty()) {
+			g.drawCenteredString(font, Component.literal("표시할 휠이 없습니다"), width / 2, listTop, 0xFF5555);
+		}
 	}
 
 	@Override

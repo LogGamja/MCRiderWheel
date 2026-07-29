@@ -121,6 +121,16 @@ public class WheelCalibrationScreen extends Screen {
 	private float[] throttleDownSnap;
 	private float[] brakeUpSnap;
 	private float[] brakeDownSnap;
+	// Warning banner text (null = none) shown for the rest of this wizard
+	// session once bestAxis() has failed to identify a steering axis - see
+	// computeSteerFields(), which leaves the profile's existing steer fields
+	// untouched in that case rather than overwriting a working calibration
+	// with a broken one. Held as the message rather than a bare flag because
+	// what to tell the player depends on whether that no-op actually preserved
+	// anything: a wheel that was already driveable keeps working, a
+	// never-calibrated one is simply still unusable, and saying "keeping your
+	// existing settings" to the latter would be a lie.
+	private String steerCalibrationWarning;
 
 	private WheelProfile profile;
 	private float[] axisBaseline;
@@ -217,7 +227,7 @@ public class WheelCalibrationScreen extends Screen {
 	}
 
 	private WheelCalibrationScreen(Scope scope, Screen parent, boolean autoTriggered) {
-		super(Component.literal("MCRider Wheel Calibration"));
+		super(Component.literal("마크라이더 레이싱 휠 보정"));
 		this.scope = scope;
 		this.parent = parent;
 		this.autoTriggered = autoTriggered;
@@ -785,6 +795,60 @@ public class WheelCalibrationScreen extends Screen {
 		return "";
 	}
 
+	/** Korean label for whichever function {@code s} captures a button for - used to name a conflicting field in the duplicate-binding warning below, and to exclude a step's own (not-yet-overwritten) field from matching itself. */
+	private static String buttonFieldName(Step s) {
+		return switch (s) {
+			case GEAR_DOWN_BUTTON -> "기어 다운";
+			case GEAR_UP_BUTTON -> "기어 업";
+			case BOOSTER_BUTTON -> "부스터";
+			case SPECIAL_BUTTON -> "익시드/차저/ERS/점프";
+			case LEFT_CLICK_BUTTON -> "좌클릭";
+			case RIGHT_CLICK_BUTTON -> "우클릭";
+			case LOOK_UP_BUTTON -> "시선 위";
+			case LOOK_DOWN_BUTTON -> "시선 아래";
+			case CROUCH_BUTTON -> "웅크리기";
+			case SWAP_HANDS_BUTTON -> "양손 바꾸기";
+			case VIEW_TOGGLE_BUTTON -> "시점 전환";
+			case HOTBAR_SHIFT_BUTTON -> "핫바 시프트";
+			default -> null;
+		};
+	}
+
+	/** Same physical control (button index, or HAT index+direction, or axis index) - unbound (-1) never matches anything, including another unbound binding. */
+	private static boolean sameControl(InputBinding a, InputBinding b) {
+		if (a.buttonIndex >= 0) return a.buttonIndex == b.buttonIndex;
+		if (a.hatIndex >= 0) return a.hatIndex == b.hatIndex && a.hatDirection == b.hatDirection;
+		if (a.axisIndex >= 0) return a.axisIndex == b.axisIndex;
+		return false;
+	}
+
+	/**
+	 * Whether {@code candidate} is already bound to a *different* function -
+	 * checked against every working field, not just ones this wizard session
+	 * has already visited: ensureProfile() seeds all 12 fields from the
+	 * previously saved profile up front, so a not-yet-visited step's field
+	 * still holds its old saved binding, and that binding survives into the
+	 * final profile for any step the player skips. Excludes the current
+	 * step's own field so re-picking the same input for the same function
+	 * isn't flagged as a conflict with itself.
+	 */
+	private String findDuplicateFieldName(InputBinding candidate) {
+		String currentField = buttonFieldName(step);
+		record Slot(String name, InputBinding binding) {
+		}
+		Slot[] slots = {
+				new Slot("기어 다운", gearDown), new Slot("기어 업", gearUp), new Slot("부스터", booster),
+				new Slot("익시드/차저/ERS/점프", special), new Slot("좌클릭", leftClick), new Slot("우클릭", rightClick),
+				new Slot("시선 위", lookUp), new Slot("시선 아래", lookDown), new Slot("웅크리기", crouch),
+				new Slot("양손 바꾸기", swapHands), new Slot("시점 전환", viewToggle), new Slot("핫바 시프트", hotbarShift),
+		};
+		for (Slot slot : slots) {
+			if (slot.name.equals(currentField)) continue;
+			if (sameControl(candidate, slot.binding)) return slot.name;
+		}
+		return null;
+	}
+
 	private void assignAndAdvance(InputBinding binding) {
 		switch (step) {
 			case GEAR_DOWN_BUTTON -> {
@@ -955,7 +1019,20 @@ public class WheelCalibrationScreen extends Screen {
 		ensureDeviceSelected();
 
 		switch (step) {
-			case INTRO -> step = afterIntro();
+			case INTRO -> {
+				// Advancing past INTRO on this device is an unambiguous "I want
+				// to calibrate this one now" - whether selectedGuid got here via
+				// an explicit device-button click or findFirstDeviceGuid()'s
+				// auto-pick, this is the actual commitment point, not the
+				// device-button click alone (the common single-device case never
+				// clicks one at all). Clears a stale decline from a past
+				// abandoned wizard so a device the player is now actively
+				// working through isn't left permanently opted out of the
+				// auto-prompt just because it isn't driveable yet - see
+				// WheelConfig.clearAutoCalibrationDecline()'s own doc comment.
+				WheelConfig.clearAutoCalibrationDecline(selectedGuid);
+				step = afterIntro();
+			}
 			case CENTER -> {
 				centerSnap = snapshot();
 				step = Step.LEFT;
@@ -1000,10 +1077,17 @@ public class WheelCalibrationScreen extends Screen {
 
 	/** Loads the profile already saved for this device (if any) so a partial re-calibration doesn't wipe the rest. */
 	private void ensureProfile() {
-		if (profile != null || !SdlJoystickReader.isOpen()) return;
+		if (!SdlJoystickReader.isOpen()) return;
 
 		String guid = SdlJoystickReader.openGuid();
 		if (guid == null) return;
+		// Not just "profile != null": selectDevice()/open() can race a
+		// hotplug so the reader's handle is still pointed at the previously
+		// selected device for a tick or two after selectedGuid changes -
+		// without re-checking the GUID here, a profile loaded for the old
+		// device would stay cached (and get written back to) even once the
+		// reader catches up to the newly selected one.
+		if (profile != null && guid.equalsIgnoreCase(profile.guid)) return;
 
 		// Work on a private copy so a mid-wizard cancel can't leave the
 		// live, currently-driving profile (WheelInput.activeProfile is
@@ -1038,6 +1122,23 @@ public class WheelCalibrationScreen extends Screen {
 		if (profile == null) return;
 
 		int steerAxis = bestAxis(leftSnap, rightSnap);
+		if (steerAxis < 0) {
+			// Mirrors how computePedalFields()/skipCurrentStep() already treat a
+			// failed/skipped capture: leave whatever was already saved for this
+			// device alone rather than stamping steerAxis=-1 over a working
+			// calibration (which would make an already-driveable wheel stop
+			// steering entirely - see this method's own history for why that's
+			// the actual bug being guarded against here).
+			boolean keptWorkingCalibration = profile.isDriveable();
+			steerCalibrationWarning = keptWorkingCalibration
+					? "조향축 인식 실패 - 기존 조향 설정을 유지합니다"
+					: "조향축 인식 실패 - 이 휠은 아직 조향할 수 없습니다. 휠 보정을 다시 실행하세요";
+			WheelClientMain.LOGGER.warn("Steering calibration failed for {} (wheel not turned far enough between LEFT/RIGHT) - {}",
+					profile.name, keptWorkingCalibration ? "keeping previously saved steering" : "device still has no usable steering");
+			return;
+		}
+
+		steerCalibrationWarning = null;
 		profile.steerAxis = steerAxis;
 		applySteerRange(steerAxis, profile);
 
@@ -1216,6 +1317,16 @@ public class WheelCalibrationScreen extends Screen {
 		}
 		int infoY = promptY + 10;
 
+		// Persists across every step for the rest of this wizard session (not
+		// just LOCK_RANGE_SELECT, where the failure is actually detected) -
+		// the player may already be onto pedals/buttons by the time they'd
+		// otherwise notice, since nothing else stops the wizard from
+		// continuing past a failed steering capture (see computeSteerFields()).
+		if (steerCalibrationWarning != null) {
+			g.drawCenteredString(font, Component.literal(steerCalibrationWarning), width / 2, infoY, 0xFF5555);
+			infoY += 10;
+		}
+
 		if (step == Step.INTRO) {
 			// Device names themselves are the selectable buttons (see init()) -
 			// only the nothing-connected case, and the case of more devices
@@ -1239,8 +1350,10 @@ public class WheelCalibrationScreen extends Screen {
 			g.drawCenteredString(font, Component.literal("최근 아날로그: " + lastAxisEventText), width / 2, infoY + 10, 0xAAAAAA);
 			g.drawCenteredString(font, Component.literal("최근 방향 버튼: " + lastHatEventText), width / 2, infoY + 20, 0xFFAA55);
 			if (awaitingConfirm && pendingBinding != null) {
-				g.drawCenteredString(font, Component.literal(describeBinding(pendingBinding) + " 감지됨 | 맞으면 [확인]을 누르세요"),
-						width / 2, infoY + 35, 0x55FF55);
+				String duplicateField = findDuplicateFieldName(pendingBinding);
+				String suffix = duplicateField != null ? " | 이미 [" + duplicateField + "]에 배정됨" : "";
+				g.drawCenteredString(font, Component.literal(describeBinding(pendingBinding) + " 감지됨" + suffix + " | 맞으면 [확인]을 누르세요"),
+						width / 2, infoY + 35, duplicateField != null ? 0xFFAA55 : 0x55FF55);
 			}
 		} else if (step == Step.LOCK_RANGE_SELECT) {
 			g.drawCenteredString(font, Component.literal(measuredRangeSummary()), width / 2, infoY, 0xAAAAAA);
@@ -1292,7 +1405,13 @@ public class WheelCalibrationScreen extends Screen {
 
 	private String measuredRangeSummary() {
 		int steerAxis = bestAxis(leftSnap, rightSnap);
-		if (steerAxis < 0 || centerSnap == null || ref90Snap == null
+		if (steerAxis < 0) {
+			// Distinct from the "no 90-degree reference" case below - here
+			// LEFT/RIGHT themselves never moved far enough to identify an
+			// axis at all, so there's no range to report yet.
+			return "조향축 인식 실패 - 휠을 왼쪽/오른쪽 끝까지 충분히 돌렸는지 확인하세요";
+		}
+		if (centerSnap == null || ref90Snap == null
 				|| steerAxis >= centerSnap.length || steerAxis >= ref90Snap.length) {
 			return "";
 		}

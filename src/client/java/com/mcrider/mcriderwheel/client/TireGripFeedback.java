@@ -21,10 +21,10 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
  * "state-drift" flag is what disambiguates the two - while it's set, this
  * always feeds the full-strength vibration magnitude regardless of what the
  * XP bar reads, and also reports the wheel as broken loose (see
- * setTiresBrokenLoose()) so WheelForceFeedback drops centering/the soft-lock
- * wall out from under that vibration instead of pulling against it - a real
- * slide gives no restoring torque back through the wheel, but the tires
- * shaking against the road is still a real, physical cue.
+ * setTiresBrokenLoose()) so WheelForceFeedback drops the centering pull out
+ * from under that vibration instead of pulling against it - a real slide
+ * gives no restoring torque back through the wheel. The soft-lock wall stays
+ * though: it's a mechanical end-stop on the rig itself, not a grip effect.
  */
 public final class TireGripFeedback {
 	private static final int GRIP_ENGINE_ID = 1006;
@@ -68,8 +68,9 @@ public final class TireGripFeedback {
 		// A real slide is always fed through as the gauge reading 100%, not
 		// whatever the reset briefly leaves on the XP bar - state-drift is
 		// what actually says the tires are broken loose, the bar doesn't.
-		// WheelForceFeedback renders this magnitude standalone (no centering
-		// underneath it) while tiresBrokenLoose is set - see its own comment.
+		// WheelForceFeedback keeps rendering this magnitude, just with no
+		// centering pull underneath it, while tiresBrokenLoose is set - see
+		// its own comment.
 		float gripProgress = isDrifting ? 1f : client.player.experienceProgress;
 		float magnitude = gripProgress > GRIP_RAMP_START
 				? (gripProgress - GRIP_RAMP_START) / (1f - GRIP_RAMP_START) * GRIP_RAMP_MAX_MAGNITUDE

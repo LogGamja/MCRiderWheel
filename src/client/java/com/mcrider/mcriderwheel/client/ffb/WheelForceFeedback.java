@@ -62,12 +62,12 @@ public final class WheelForceFeedback {
 	// comment for why pulse() is touchy about rapid re-calls in general).
 	private static volatile float gripVibrationMagnitude;
 	// Set from TireGripFeedback: true while the tires have actually broken
-	// loose (state-drift, not just a low XP-bar reading). While set,
-	// tick() drops centering and the soft-lock wall entirely - a real car
-	// gives essentially no self-aligning torque back through the wheel once
-	// the tires genuinely lose grip - but keeps rendering gripVibrationMagnitude
-	// as the sole force, since the tires shaking against the road is still a
-	// real, physical cue, unlike the wheel trying to point itself anywhere.
+	// loose (state-drift, not just a low XP-bar reading). While set, tick()
+	// drops the centering pull entirely - a real car gives essentially no
+	// self-aligning torque back through the wheel once the tires genuinely
+	// lose grip - but keeps both the soft-lock wall (a mechanical end-stop
+	// on the rig itself, not a grip effect) and gripVibrationMagnitude, the
+	// tires shaking against the road still being a real, physical cue.
 	private static volatile boolean tiresBrokenLoose;
 	private static int vibrationPhaseTicks;
 	private static final int VIBRATION_HALF_PERIOD_TICKS = 1; // ~10Hz square-wave buzz at the 20Hz client tick rate
@@ -180,9 +180,6 @@ public final class WheelForceFeedback {
 			SdlForceFeedback.mcrider_ffb_init();
 			int index = findSdlIndexForGuid(profile.guid);
 			if (index < 0) {
-				index = findSdlIndexForName(profile.name);
-			}
-			if (index < 0) {
 				WheelClientMain.LOGGER.warn("[FFB] could not match device '{}' (guid {}) to any SDL haptic device", profile.name, profile.guid);
 				int count = SdlForceFeedback.mcrider_ffb_device_count();
 				for (int i = 0; i < count; i++) {
@@ -228,6 +225,11 @@ public final class WheelForceFeedback {
 		enabled = false;
 		enabledGuid = null;
 		failedGuid = null;
+		// A handle being closed here means whatever reopens next (a fresh
+		// enable()) starts with a fresh effect - stoppedForCalibration's "already
+		// issued stop() for this session" state belongs to the handle that just
+		// went away, not whatever comes next.
+		stoppedForCalibration = false;
 		// Re-arm the settle delay so whatever reopens next waits it out again.
 		// Without this, a device that opens fine but whose set_force then
 		// keeps failing would close+reopen every single tick (the failure
@@ -258,17 +260,6 @@ public final class WheelForceFeedback {
 		int count = SdlForceFeedback.mcrider_ffb_device_count();
 		for (int i = 0; i < count; i++) {
 			if (guid.equalsIgnoreCase(SdlForceFeedback.mcrider_ffb_device_guid(i))) {
-				return i;
-			}
-		}
-		return -1;
-	}
-
-	private static int findSdlIndexForName(String name) {
-		if (name == null || !sdlAvailable) return -1;
-		int count = SdlForceFeedback.mcrider_ffb_device_count();
-		for (int i = 0; i < count; i++) {
-			if (name.equalsIgnoreCase(SdlForceFeedback.mcrider_ffb_device_name(i))) {
 				return i;
 			}
 		}
@@ -379,6 +370,16 @@ public final class WheelForceFeedback {
 			try {
 				if (handle >= 0 && SdlForceFeedback.mcrider_ffb_restart_effect(handle) != 0) {
 					disable("window focus regained, reopening so DirectInput reacquires");
+				} else {
+					// restart_effect Run()s the effect, so it undoes the
+					// calibration-screen stop() below - re-arm that latch so the
+					// stop is re-issued on this same tick rather than never
+					// again. This block sits above (and deliberately outside)
+					// the calibration guard, so alt-tabbing back mid-wizard
+					// would otherwise leave centering force fighting the hand
+					// holding the wheel at a reference point for the rest of the
+					// session.
+					stoppedForCalibration = false;
 				}
 			} catch (Throwable t) {
 				onNativeFault("restart_effect (focus regain)", t);
@@ -455,30 +456,52 @@ public final class WheelForceFeedback {
 		// stuck off if the calibration screen ever closes through a path
 		// that skips its normal onClose().
 		if (Minecraft.getInstance().screen instanceof WheelCalibrationScreen) {
-			try {
-				SdlForceFeedback.mcrider_ffb_stop(handle);
-			} catch (Throwable t) {
-				onNativeFault("stop", t);
+			// Issued once on entry, not every tick the screen stays open -
+			// this class's own comments elsewhere (pulse()'s PULSE_COOLDOWN_NANOS,
+			// enable()'s ENABLE_ARM_DELAY_NANOS) are all about the same lesson
+			// learned the hard way on this SDL2/DirectInput stack: rapid
+			// repeated native calls into it are what actually crashes it, not
+			// a single call. A calibration session can sit on one step for
+			// minutes, which used to mean stop() at the client's full 20 Hz
+			// tick rate for that whole span.
+			if (!stoppedForCalibration) {
+				try {
+					SdlForceFeedback.mcrider_ffb_stop(handle);
+					stoppedForCalibration = true;
+				} catch (Throwable t) {
+					onNativeFault("stop", t);
+				}
 			}
 			return;
 		}
+		stoppedForCalibration = false;
 
 		float steering = WheelInput.steering; // -1 (left) .. 1 (right)
 
 		float magnitude;
 		float direction;
 		if (tiresBrokenLoose) {
-			// Tires actually broken loose: centering and the soft-lock wall
-			// both drop out entirely - a real slide gives no restoring torque
-			// back through the wheel at all - but gripVibrationMagnitude still
-			// renders on its own, undiluted by any centering pull, as an
-			// oscillating direction rather than a steady one. See the
-			// tiresBrokenLoose field's own comment.
+			// Centering (the self-aligning pull grip normally provides)
+			// drops out - a real slide gives no restoring torque back
+			// through the wheel - but the soft-lock wall is a mechanical
+			// end-stop on the rig itself, not a grip effect, so it still
+			// applies once the wheel is cranked past the configured lock.
+			// steerOverTravel already ramps 0..1 past that lock (see
+			// WheelInput.computeOverTravel()) with no centering baseline
+			// folded in here, unlike the non-drift branch below. Summed
+			// with gripVibrationMagnitude the same way that branch sums
+			// vibration onto centering, rather than rendered as a
+			// totally separate, unsigned buzz.
+			float wallMagnitude = Math.min(1f, WheelInput.steerOverTravel * strengthMultiplier());
+			float wallSigned = steering >= 0 ? wallMagnitude : -wallMagnitude;
+
 			float vibMagnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
 			vibrationPhaseTicks++;
 			boolean phaseHigh = (vibrationPhaseTicks / VIBRATION_HALF_PERIOD_TICKS) % 2 == 0;
-			magnitude = vibMagnitude;
-			direction = phaseHigh ? 0f : 180f;
+			float vibSigned = phaseHigh ? vibMagnitude : -vibMagnitude;
+			float netSigned = Math.max(-1f, Math.min(1f, wallSigned + vibSigned));
+			magnitude = Math.abs(netSigned);
+			direction = netSigned >= 0 ? 0f : 180f;
 		} else {
 			// Centering is computed first, as a signed value, regardless of
 			// grip vibration - direction=0 <-> sign +1 and direction=180 <->
@@ -537,9 +560,19 @@ public final class WheelForceFeedback {
 				// (only on the tick the wheel *enters* the center zone, not
 				// every tick spent parked there) so it can't fire dozens of
 				// times a second while idling at center.
+				//
+				// Edge-triggering alone still wasn't a rate limit: real driving
+				// crosses the center zone repeatedly (a slalom does it several
+				// times a second), and each crossing was a blocking DirectInput
+				// Stop+Run round trip on the render thread. RESTART_MIN_INTERVAL_TICKS
+				// caps that - the effect only needs restarting often enough to
+				// stay under the device's ~60-70s cutoff, so anything past one
+				// restart per 15s is pure cost for no benefit.
 				boolean nearCenter = Math.abs(WheelInput.steering) <= CENTER_RESET_DEADZONE;
 				restartTicks++;
-				if ((nearCenter && !wasNearCenter) || restartTicks >= RESTART_FALLBACK_TICKS) {
+				boolean centerCrossing = nearCenter && !wasNearCenter;
+				if ((centerCrossing && restartTicks >= RESTART_MIN_INTERVAL_TICKS)
+						|| restartTicks >= RESTART_FALLBACK_TICKS) {
 					restartTicks = 0;
 					periodicRestart();
 				}
@@ -592,9 +625,18 @@ public final class WheelForceFeedback {
 	// the wheel being held off-center continuously with no center crossing
 	// to piggyback on; kept comfortably under the ~60-70s failure window.
 	private static final float CENTER_RESET_DEADZONE = 0.05f; // |steering| below this counts as "at center" - magnitude here is negligible, so the restart blip isn't felt
+	// Floor on how often a center crossing may actually spend a restart. Both
+	// this and the fallback stay well under the ~60-70s cutoff, so the worst
+	// case gap between restarts is still the fallback's 30s.
+	private static final int RESTART_MIN_INTERVAL_TICKS = 300; // 15s at the 20Hz client tick
 	private static final int RESTART_FALLBACK_TICKS = 600; // 30s at the 20Hz client tick
 	private static int restartTicks;
 	private static boolean wasNearCenter = true;
+	// True once mcrider_ffb_stop() has actually been issued for the
+	// calibration screen currently up - see tick()'s own use of this. Reset
+	// back to false the moment the screen isn't up anymore, so the next time
+	// it opens gets a fresh stop() call.
+	private static boolean stoppedForCalibration;
 
 	private static void periodicRestart() {
 		if (SdlForceFeedback.mcrider_ffb_restart_effect(handle) != 0) {

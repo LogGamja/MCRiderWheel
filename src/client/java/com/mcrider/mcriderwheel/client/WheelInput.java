@@ -24,6 +24,64 @@ public class WheelInput {
 	// overturn past the "virtual" lock point.
 	public static float steerOverTravel;
 
+	// Same stale-until-first-moved hardware quirk WheelDrivingControl.isDown()
+	// already guards spare-axis (clutch) bindings against, applied to the
+	// throttle/brake axes it never covered: on a fresh connect some pedal
+	// hardware reports a neutral raw value until the pedal is physically moved
+	// once, which for an axis whose released end is one extreme normalizes to
+	// ~0.5 - half throttle with nobody touching anything. That PWM-taps the
+	// forward key and, worse, makes WheelDrivingControl force setSprinting(false)
+	// every tick against vanilla's own aiStep re-enabling it, so sprinting on
+	// the keyboard visibly stutters until the pedal is pressed once.
+	private static final PedalArming throttleArming = new PedalArming();
+	private static final PedalArming brakeArming = new PedalArming();
+	// GUID the arming state above belongs to, so switching wheels re-arms
+	// rather than inheriting the previous device's "already proven live" state.
+	private static String armedForGuid;
+
+	/**
+	 * Holds one pedal's "has this axis ever reported real data" state. Reads 0
+	 * until either a genuinely released sample arrives (the healthy case - a
+	 * pedal at rest normalizes to ~0, so this arms on the very first tick and
+	 * changes nothing) or the raw value moves at all from where it was first
+	 * seen (which proves the device is live even if its rest reading sits
+	 * oddly high, so a drifting pedal can't get locked out permanently).
+	 */
+	private static final class PedalArming {
+		// Normalized value at or below which a pedal counts as genuinely released.
+		private static final float RELEASED_MAX = 0.1f;
+		// Raw movement that proves the axis isn't frozen, above per-tick noise.
+		private static final float LIVE_MOVE_EPSILON = 0.02f;
+
+		private int axis = -1;
+		private boolean armed;
+		private boolean firstSampleSeen;
+		private float firstRaw;
+
+		void reset() {
+			armed = false;
+			firstSampleSeen = false;
+			axis = -1;
+		}
+
+		float apply(int axis, float normalized, float raw) {
+			// A recalibration can move a pedal onto a different axis without the
+			// GUID changing, and the new one hasn't proven itself yet.
+			if (axis != this.axis) {
+				reset();
+				this.axis = axis;
+			}
+			if (!armed) {
+				if (!firstSampleSeen) {
+					firstSampleSeen = true;
+					firstRaw = raw;
+				}
+				armed = normalized <= RELEASED_MAX || Math.abs(raw - firstRaw) > LIVE_MOVE_EPSILON;
+			}
+			return armed ? normalized : 0f;
+		}
+	}
+
 	public static void tick() {
 		// SdlJoystickReader holds only one native handle open at a time - both
 		// this method and WheelCalibrationScreen's own tick() call open() on it
@@ -77,14 +135,20 @@ public class WheelInput {
 			if (!SdlJoystickReader.open(guid)) continue;
 			SdlJoystickReader.update();
 
+			if (!java.util.Objects.equals(guid, armedForGuid)) {
+				throttleArming.reset();
+				brakeArming.reset();
+				armedForGuid = guid;
+			}
+
 			available = true;
 			activeDeviceName = profile.name;
 			activeProfile = profile;
 			activeGuid = guid;
 			steering = mapSteer(profile);
 			steerOverTravel = computeOverTravel(profile);
-			throttle = mapPedal(profile.throttleAxis, profile.throttleReleased, profile.throttlePressed);
-			brake = mapPedal(profile.brakeAxis, profile.brakeReleased, profile.brakePressed);
+			throttle = mapPedal(profile.throttleAxis, profile.throttleReleased, profile.throttlePressed, throttleArming);
+			brake = mapPedal(profile.brakeAxis, profile.brakeReleased, profile.brakePressed, brakeArming);
 			break;
 		}
 
@@ -109,6 +173,11 @@ public class WheelInput {
 			throttle = 0f;
 			brake = 0f;
 			steerOverTravel = 0f;
+			// A reconnect is exactly when the stale-value quirk shows up again,
+			// so don't carry "already proven live" across a disconnect.
+			throttleArming.reset();
+			brakeArming.reset();
+			armedForGuid = null;
 		}
 	}
 
@@ -170,11 +239,12 @@ public class WheelInput {
 		return clamp((travel - lockRaw) / wallWidth, 0f, 1f);
 	}
 
-	private static float mapPedal(int axis, float released, float pressed) {
+	private static float mapPedal(int axis, float released, float pressed, PedalArming arming) {
 		if (axis < 0 || axis >= SdlJoystickReader.axisCount()) return 0f;
 		float v = SdlJoystickReader.axisValue(axis);
 		float span = pressed - released;
-		return Math.abs(span) < 1e-4f ? 0f : clamp((v - released) / span, 0f, 1f);
+		if (Math.abs(span) < 1e-4f) return 0f;
+		return arming.apply(axis, clamp((v - released) / span, 0f, 1f), v);
 	}
 
 	private static float clamp(float v, float lo, float hi) {

@@ -120,13 +120,17 @@ public class WheelDrivingControl {
 		// pressed (or a wheel just off-center) keeps moving/turning the
 		// player while the game window isn't even in front.
 		if (client.player == null || client.screen != null || !client.isWindowActive()) {
-			// Only release keys this class could actually be holding - releasing
-			// unconditionally would stomp another mod's setDown() every tick any
-			// screen is open, even with no wheel connected, which is exactly what
-			// the wheelReady guard further down exists to prevent. Clearing
-			// wasWheelReady makes this one-shot on the falling edge for the same
-			// reason.
-			if (WheelInput.available || wasWheelReady) {
+			// Only release keys this class could actually be holding, and only
+			// once, on the falling edge - wasWheelReady is only true if this
+			// class actually set a key down last tick. Gating on WheelInput.available
+			// instead (the old behavior) meant a wheel left connected while any
+			// screen was open - inventory, chat, pause - had this call releaseAll()
+			// every single tick for as long as that screen stayed up, since
+			// available stays true regardless of whether a screen is blocking
+			// driving. That's exactly the "stomp another mod's setDown()" case
+			// this guard exists to prevent, just re-triggered continuously
+			// instead of avoided.
+			if (wasWheelReady) {
 				releaseAll(client);
 				wasWheelReady = false;
 			}

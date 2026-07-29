@@ -28,7 +28,7 @@ public abstract class PauseScreenMixin extends Screen {
 		// which another mod's own pause-screen button was found occupying at the
 		// same size) - still far enough from vanilla's own width/2-centered
 		// button column to stay clear of it at any scale.
-		this.addRenderableWidget(Button.builder(Component.literal("MCRider Wheel"), b -> {
+		this.addRenderableWidget(Button.builder(Component.literal("레이싱 휠 설정"), b -> {
 					assert this.minecraft != null;
 					this.minecraft.setScreen(new WheelSettingsScreen(this));
 				})

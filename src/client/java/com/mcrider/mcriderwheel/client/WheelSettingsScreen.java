@@ -78,12 +78,14 @@ public class WheelSettingsScreen extends Screen {
 	// disconnect while this screen is open).
 	private PercentSlider sensitivitySlider;
 	private PercentSlider ffbStrengthSlider;
-	// Edge-detects a wheel connecting while this screen is already open - see
-	// render()'s use of this below.
-	private boolean wasWheelConnected;
+	// GUID the sliders were last synced to. Keyed on the device rather than on
+	// WheelInput.available, since "a different wheel is now active" and "a
+	// wheel became available at all" both need a resync but only the latter
+	// shows up as an availability edge - see render()'s use of this below.
+	private String syncedGuid;
 
 	public WheelSettingsScreen(Screen parent) {
-		super(Component.literal("MCRider Wheel Settings"));
+		super(Component.literal("마크라이더 레이싱 휠 설정"));
 		this.parent = parent;
 	}
 
@@ -272,11 +274,26 @@ public class WheelSettingsScreen extends Screen {
 		// that fallback position forever (just newly draggable), so the
 		// first touch would silently overwrite a real non-default saved
 		// value with whatever the fallback-derived handle position implied.
-		if (wheelConnected && !wasWheelConnected) {
+		//
+		// Compared against the active GUID rather than a mere connected/not
+		// edge: WheelInput.tick() picks its device fresh every tick from a
+		// candidate list, so unplugging wheel A while wheel B is already
+		// connected switches activeProfile with available never once going
+		// false - which left the sliders showing A's values and the next drag
+		// writing them straight onto B's profile.
+		// equalsIgnoreCase tolerates a null argument (returns false), so the
+		// first sync - with syncedGuid still null - falls out of this naturally.
+		String activeGuid = wheelConnected ? WheelInput.activeGuid : null;
+		if (activeGuid != null && !activeGuid.equalsIgnoreCase(syncedGuid)) {
+			// Flush before repointing: writeToDisk() serializes the whole
+			// profile map, so this also commits the outgoing device's own
+			// pending keyboard edits (which mutated its profile object in
+			// place) rather than leaving them in memory only.
+			flushProfileIfDirty();
 			sensitivitySlider.refreshFromProfile();
 			ffbStrengthSlider.refreshFromProfile();
 		}
-		wasWheelConnected = wheelConnected;
+		syncedGuid = activeGuid;
 		sensitivitySlider.active = wheelConnected;
 		ffbStrengthSlider.active = wheelConnected;
 

@@ -8,7 +8,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.Minecraft;
-import net.minecraft.network.chat.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,7 +80,7 @@ public class WheelClientMain implements ClientModInitializer {
 			// shouldn't be able to take driving/FFB down with it for the rest
 			// of the tick, let alone crash the whole client - it's isolated,
 			// logged, and simply retried next tick instead.
-			safeTick("checkConnections", () -> checkConnections(client));
+			safeTick("checkConnections", this::checkConnections);
 			safeTick("WheelInput", WheelInput::tick);
 			safeTick("WheelDrivingControl", () -> WheelDrivingControl.tick(client));
 			// Both feed WheelForceFeedback's per-tick state (extra resistance /
@@ -159,14 +158,14 @@ public class WheelClientMain implements ClientModInitializer {
 		return false;
 	}
 
-	private void say(Minecraft client, String msg) {
-		LOGGER.info(msg);
-		if (client.gui != null) {
-			client.gui.getChat().addMessage(Component.literal(msg));
-		}
-	}
-
-	private void checkConnections(Minecraft client) {
+	/**
+	 * Log-only, not chat: this fires for every device present on the very
+	 * first tick (connectedGuids starts empty), so a normal two-wheel setup
+	 * used to print two "joystick connected" lines into chat on every single
+	 * world join - the log file is the right place for this, not the chat
+	 * the player actually plays in.
+	 */
+	private void checkConnections() {
 		Set<String> present = new HashSet<>();
 		int count = SdlJoystickReader.deviceCount();
 		for (int i = 0; i < count; i++) {
@@ -175,7 +174,7 @@ public class WheelClientMain implements ClientModInitializer {
 			present.add(guid);
 			if (!connectedGuids.contains(guid)) {
 				String name = SdlJoystickReader.deviceName(i);
-				say(client, "[MCRiderWheel] joystick connected: " + name + " (guid=" + guid + ")");
+				LOGGER.info("[MCRiderWheel] joystick connected: {} (guid={})", name, guid);
 
 				WheelProfile profile = WheelConfig.get(guid);
 				if ((profile == null || !profile.isDriveable()) && !anyCalibratedJoystickPresent()
@@ -186,7 +185,7 @@ public class WheelClientMain implements ClientModInitializer {
 		}
 		for (String guid : connectedGuids) {
 			if (!present.contains(guid)) {
-				say(client, "[MCRiderWheel] joystick disconnected (guid=" + guid + ")");
+				LOGGER.info("[MCRiderWheel] joystick disconnected (guid={})", guid);
 			}
 		}
 		connectedGuids.clear();
