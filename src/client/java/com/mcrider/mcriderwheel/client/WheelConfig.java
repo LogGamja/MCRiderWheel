@@ -18,9 +18,13 @@ import java.util.Map;
 /**
  * Stores one calibrated {@link WheelProfile} per device GUID so a wheel
  * only needs to be calibrated once, regardless of USB port/reconnects, plus
- * which GUID (if any) the player has explicitly chosen to drive with when
- * more than one calibrated wheel is connected at once (see
- * WheelDeviceSelectScreen and WheelInput's own use of getPreferredGuid()).
+ * which GUID (if any) should be preferred to drive with when more than one
+ * calibrated wheel is connected at once (see WheelInput's own use of
+ * getPreferredGuid()). Set either by explicitly picking a device in
+ * WheelDeviceSelectScreen, or automatically whenever a device finishes (or
+ * re-finishes) any part of calibration (see WheelCalibrationScreen's
+ * completeAndSave()/persistProgress()) - a wheel someone just calibrated is
+ * almost always the one they want driving now.
  */
 public class WheelConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -91,7 +95,7 @@ public class WheelConfig {
 		writeToDisk();
 	}
 
-	/** GUID the player explicitly picked to drive with (see WheelDeviceSelectScreen), or null to just use whichever calibrated device SDL enumerates first (the original behavior). */
+	/** GUID to prefer driving with (explicitly picked via WheelDeviceSelectScreen, or auto-set on calibration - see this class's doc comment), or null to just use whichever calibrated device SDL enumerates first (the original behavior). */
 	public static String getPreferredGuid() {
 		ensureLoaded();
 		return preferredGuid;

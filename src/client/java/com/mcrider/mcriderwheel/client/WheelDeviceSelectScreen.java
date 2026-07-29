@@ -18,11 +18,18 @@ import java.util.List;
  * reconnects/reboots. The choice is persisted via
  * {@link WheelConfig#setPreferredGuid}, and only takes effect for devices
  * that are both connected and calibrated at the time WheelInput reads it -
- * an unplugged preferred wheel just falls back to the old first-found
+ * an unplugged preferred wheel just falls back to that first-found
  * behavior rather than leaving nothing driveable.
+ *
+ * Only calibrated devices are listed: an uncalibrated one has no profile for
+ * WheelInput to drive from, so preferring it would silently do nothing.
+ * Calibrate it from the settings screen first and it shows up here.
  */
 public class WheelDeviceSelectScreen extends Screen {
 	private final Screen parent;
+	// Set in init(), read back in render() so the notice text can sit right
+	// above the button list regardless of how many calibrated wheels there are.
+	private int listTop;
 
 	public WheelDeviceSelectScreen(Screen parent) {
 		super(Component.literal("사용할 휠 선택"));
@@ -37,15 +44,9 @@ public class WheelDeviceSelectScreen extends Screen {
 		int btnWidth = Math.min(280, width - 20);
 		int btnHeight = 20;
 		int gap = 6;
-		int autoBtnY = height / 2 - ((guids.size() + 1) * (btnHeight + gap)) / 2;
+		listTop = height / 2 - (guids.size() * (btnHeight + gap)) / 2;
 
-		addRenderableWidget(Button.builder(
-						Component.literal("첫 번째 휠 선택" + (preferredGuid == null ? " [선택됨]" : "")),
-						b -> choose(null))
-				.bounds(width / 2 - btnWidth / 2, autoBtnY, btnWidth, btnHeight)
-				.build());
-
-		int y = autoBtnY + btnHeight + gap;
+		int y = listTop;
 		for (String guid : guids) {
 			WheelProfile profile = WheelConfig.get(guid);
 			String name = profile.name != null && !profile.name.isEmpty() ? profile.name : guid;
@@ -99,6 +100,8 @@ public class WheelDeviceSelectScreen extends Screen {
 	public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
 		super.render(g, mouseX, mouseY, partialTick);
 		g.drawCenteredString(font, title, width / 2, height / 2 - 90, 0xFFFFFF);
+		g.drawCenteredString(font, Component.literal("보정하지 않은 휠은 표시되지 않습니다"),
+				width / 2, listTop - 16, 0xAAAAAA);
 	}
 
 	@Override

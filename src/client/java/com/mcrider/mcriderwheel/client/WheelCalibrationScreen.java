@@ -737,6 +737,13 @@ public class WheelCalibrationScreen extends Screen {
 	private void selectLockRange(float degrees) {
 		desiredLockDeg = degrees;
 		computeSteerFields();
+		// Persist as soon as this group is actually done, not just at the
+		// wizard's very final DONE - in FULL scope this doesn't reach DONE
+		// yet (it chains into pedals/buttons next), and without this a player
+		// who calibrates the wheel, then the pedals, then quits before also
+		// remapping every button loses everything they just did, since
+		// nothing had ever hit disk.
+		persistProgress();
 		goTo(afterWheelGroup());
 	}
 
@@ -869,6 +876,9 @@ public class WheelCalibrationScreen extends Screen {
 			case BRAKE_DOWN -> {
 				brakeDownSnap = snapshot();
 				computePedalFields();
+				// See selectLockRange()'s comment - same reasoning for the
+				// pedal group.
+				persistProgress();
 				goTo(afterPedalGroup());
 			}
 			case DONE -> onClose();
@@ -886,8 +896,9 @@ public class WheelCalibrationScreen extends Screen {
 
 		// Work on a private copy so a mid-wizard cancel can't leave the
 		// live, currently-driving profile (WheelInput.activeProfile is
-		// this same cached instance) half-updated - only completeAndSave()
-		// at DONE writes the result back via WheelConfig.save().
+		// this same cached instance) half-updated mid-group - only a
+		// finished group (see persistProgress()/completeAndSave()) ever
+		// writes back via WheelConfig.save().
 		WheelProfile existing = WheelConfig.get(guid);
 		profile = existing != null ? existing.copy() : new WheelProfile();
 		profile.guid = guid;
@@ -1023,7 +1034,34 @@ public class WheelCalibrationScreen extends Screen {
 	private void completeAndSave() {
 		if (profile == null) return;
 		WheelConfig.save(profile);
+		// The device just (re)calibrated is what the player almost certainly
+		// wants to drive with right now - without this, a wheel that was
+		// never explicitly picked via WheelDeviceSelectScreen keeps losing to
+		// whichever calibrated+driveable device SDL happens to enumerate
+		// first (typically whichever was plugged in earliest), even if it's
+		// the one just calibrated. Harmless to set on a profile that isn't
+		// driveable yet (e.g. a BUTTONS_ONLY-only run before the wheel itself
+		// has ever been calibrated) - WheelInput.tick() only actually
+		// consults a preferred GUID for devices that pass isDriveable().
+		WheelConfig.setPreferredGuid(profile.guid);
 		WheelClientMain.LOGGER.info("Saved wheel profile for {}", profile.name);
+	}
+
+	/**
+	 * Writes whatever's been calibrated into {@code profile} so far, without
+	 * ending the wizard - called right after a whole group (wheel or pedals)
+	 * finishes computing its fields, so quitting mid-wizard only ever loses
+	 * an in-progress group, never groups that already finished. Safe to call
+	 * more than once per session (e.g. once after wheel, again after
+	 * pedals): each call just re-saves the same profile object with
+	 * whatever's been added to it since the last save.
+	 */
+	private void persistProgress() {
+		if (profile == null) return;
+		WheelConfig.save(profile);
+		// See completeAndSave()'s comment - same reasoning applies to a group
+		// finishing mid-wizard, not just the wizard's very end.
+		WheelConfig.setPreferredGuid(profile.guid);
 	}
 
 	private int bestAxis(float[] a, float[] b, int... exclude) {

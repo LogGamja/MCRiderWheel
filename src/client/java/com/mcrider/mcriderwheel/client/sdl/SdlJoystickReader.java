@@ -86,19 +86,39 @@ public final class SdlJoystickReader {
 			// handle instead of ever reopening the reconnected device.
 			if (SdlJoystick.SDL_JoystickGetAttached(openJoystick)) return true;
 		}
-		close();
-
+		// Scan via deviceGuid() (index-revalidated, try/caught) rather than a
+		// raw SDL_JoystickGetDeviceGUID/SDL_JoystickGetGUIDString pair - see
+		// that method's doc comment for the JVM-killing access violation a
+		// stale index causes there.
+		int index = -1;
 		int count = SdlJoystick.SDL_NumJoysticks();
 		for (int i = 0; i < count; i++) {
-			SDL_JoystickGUID deviceGuid = SdlJoystick.SDL_JoystickGetDeviceGUID(i);
-			if (guid.equalsIgnoreCase(SdlJoystick.SDL_JoystickGetGUIDString(deviceGuid))) {
-				openJoystick = SdlJoystick.SDL_JoystickOpen(i);
-				if (openJoystick == null) return false;
-				openGuid = guid;
-				return true;
+			if (guid.equalsIgnoreCase(deviceGuid(i))) {
+				index = i;
+				break;
 			}
 		}
-		return false;
+		if (index < 0) return false;
+
+		// Open the new handle *before* closing the old one, not after -
+		// SDL_JoystickOpen tolerates a since-gone index fine (confirmed:
+		// returns null rather than crashing, twice now), so there's no need
+		// to re-verify its result via another native GUID query. An earlier
+		// version of this method tried exactly that re-verification -
+		// SDL_JoystickGetGUID(handle) followed by SDL_JoystickGetGUIDString -
+		// and that crashed the JVM too (EXCEPTION_ACCESS_VIOLATION), even
+		// though the handle itself was a valid, just-opened, non-null
+		// SDL_Joystick. So: no GUID query on a live handle, ever, in this
+		// environment - deviceGuid()'s index-based query is the only one
+		// that's held up under testing. Briefly holding both the old and new
+		// handles open across this call is fine - SdlForceFeedback already
+		// does exactly that with its own separate handle to the same device.
+		SDL_Joystick opened = SdlJoystick.SDL_JoystickOpen(index);
+		if (opened == null) return false;
+		close();
+		openJoystick = opened;
+		openGuid = guid;
+		return true;
 	}
 
 	public static void close() {
