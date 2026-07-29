@@ -68,24 +68,53 @@ public class WheelClientMain implements ClientModInitializer {
 			}
 		});
 
-		WorldRenderEvents.START.register(context -> WheelDrivingControl.tickRotation(Minecraft.getInstance()));
+		WorldRenderEvents.START.register(context ->
+				safeTick("tickRotation", () -> WheelDrivingControl.tickRotation(Minecraft.getInstance())));
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			checkConnections(client);
-			WheelInput.tick();
-			WheelDrivingControl.tick(client);
+			// Each subsystem runs in its own try/catch rather than one around the
+			// whole tick: TireGripFeedback/VehicleDirectionDebug in particular
+			// read MCRider's internal state through ad-hoc, reverse-engineered
+			// heuristics (attribute-modifier IDs, a passenger's display name -
+			// see their own doc comments) that an MCRider update could change
+			// out from under this mod at any time. A Java exception there
+			// shouldn't be able to take driving/FFB down with it for the rest
+			// of the tick, let alone crash the whole client - it's isolated,
+			// logged, and simply retried next tick instead.
+			safeTick("checkConnections", () -> checkConnections(client));
+			safeTick("WheelInput", WheelInput::tick);
+			safeTick("WheelDrivingControl", () -> WheelDrivingControl.tick(client));
 			// Both feed WheelForceFeedback's per-tick state (extra resistance /
 			// grip vibration) - must run before WheelForceFeedback.tick() itself
 			// or FFB always renders one tick stale.
-			VehicleDirectionDebug.tick(client);
-			TireGripFeedback.tick(client);
-			WheelForceFeedback.tick();
+			safeTick("VehicleDirectionDebug", () -> VehicleDirectionDebug.tick(client));
+			safeTick("TireGripFeedback", () -> TireGripFeedback.tick(client));
+			safeTick("WheelForceFeedback", WheelForceFeedback::tick);
 
 			if (pendingAutoCalibration && client.player != null && client.screen == null) {
 				pendingAutoCalibration = false;
-				client.setScreen(new WheelCalibrationScreen());
+				safeTick("open calibration screen", () -> client.setScreen(new WheelCalibrationScreen()));
 			}
 		});
+	}
+
+	/**
+	 * Runs one subsystem's per-tick/per-frame work in isolation. A JNA/SDL
+	 * call crashing the JVM outright (EXCEPTION_ACCESS_VIOLATION) can't be
+	 * caught by any Java try/catch - that class of failure is guarded against
+	 * at its own source instead (see SdlJoystickReader/SdlForceFeedback's own
+	 * try/catches and WheelForceFeedback's nativeFaulted latch). This is the
+	 * separate case of an ordinary Java exception (NPE, out-of-bounds,
+	 * a third-party mod's data shape changing) - those don't corrupt JVM
+	 * state, so unlike a native fault there's no reason to stop retrying;
+	 * logging and letting the next tick try again is enough.
+	 */
+	private static void safeTick(String name, Runnable task) {
+		try {
+			task.run();
+		} catch (Throwable t) {
+			LOGGER.error("[MCRiderWheel] {} tick failed - continuing", name, t);
+		}
 	}
 
 	/**

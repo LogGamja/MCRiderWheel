@@ -74,10 +74,25 @@ public final class SdlJoystickReader {
 	 */
 	private static boolean ensureSdlInit() {
 		if (sdlInitialized) return true;
-		if (Sdl.SDL_Init(SdlSubSystemConst.SDL_INIT_JOYSTICK) != 0) {
+		try {
+			if (Sdl.SDL_Init(SdlSubSystemConst.SDL_INIT_JOYSTICK) != 0) {
+				if (!sdlInitFailureLogged) {
+					sdlInitFailureLogged = true;
+					WheelClientMain.LOGGER.error("[Wheel] failed to initialize SDL joystick subsystem: {}", SdlError.SDL_GetError());
+				}
+				return false;
+			}
+		} catch (Throwable t) {
+			// A missing/corrupt native SDL2 library surfaces here as a JNA
+			// load-time error (e.g. UnsatisfiedLinkError), not the kind of
+			// stale-handle/stale-index access violation the rest of this
+			// class's try/catches are guarding against - but this call is
+			// retried every tick same as those, so it needs the same
+			// "don't let a Java-catchable failure take the client tick down
+			// with it" treatment.
 			if (!sdlInitFailureLogged) {
 				sdlInitFailureLogged = true;
-				WheelClientMain.LOGGER.error("[Wheel] failed to initialize SDL joystick subsystem: {}", SdlError.SDL_GetError());
+				WheelClientMain.LOGGER.error("[Wheel] failed to load/initialize SDL2", t);
 			}
 			return false;
 		}
@@ -93,56 +108,65 @@ public final class SdlJoystickReader {
 	 */
 	public static boolean open(String guid) {
 		if (guid == null || !ensureSdlInit()) return false;
-		// Refreshed here (not just relying on the caller's own per-tick
-		// update()) so SDL_JoystickGetAttached below reflects a disconnect
-		// that happened since the last update() call, not stale state.
-		pollIfStale();
-		if (openJoystick != null && guid.equalsIgnoreCase(openGuid)) {
-			// A same-GUID fast path alone can't tell "still the same live
-			// device" apart from "this GUID was unplugged and replugged" -
-			// SDL doesn't null out our handle on disconnect, so without this
-			// check a replug would leave open() forever reusing a dead
-			// handle instead of ever reopening the reconnected device.
-			if (SdlJoystick.SDL_JoystickGetAttached(openJoystick)) return true;
-		}
-		// Scan via deviceGuid() (index-revalidated, try/caught) rather than a
-		// raw SDL_JoystickGetDeviceGUID/SDL_JoystickGetGUIDString pair - see
-		// that method's doc comment for the JVM-killing access violation a
-		// stale index causes there.
-		int index = -1;
-		int count = SdlJoystick.SDL_NumJoysticks();
-		for (int i = 0; i < count; i++) {
-			if (guid.equalsIgnoreCase(deviceGuid(i))) {
-				index = i;
-				break;
+		try {
+			// Refreshed here (not just relying on the caller's own per-tick
+			// update()) so SDL_JoystickGetAttached below reflects a disconnect
+			// that happened since the last update() call, not stale state.
+			pollIfStale();
+			if (openJoystick != null && guid.equalsIgnoreCase(openGuid)) {
+				// A same-GUID fast path alone can't tell "still the same live
+				// device" apart from "this GUID was unplugged and replugged" -
+				// SDL doesn't null out our handle on disconnect, so without this
+				// check a replug would leave open() forever reusing a dead
+				// handle instead of ever reopening the reconnected device.
+				if (SdlJoystick.SDL_JoystickGetAttached(openJoystick)) return true;
 			}
-		}
-		if (index < 0) return false;
+			// Scan via deviceGuid() (index-revalidated, try/caught) rather than a
+			// raw SDL_JoystickGetDeviceGUID/SDL_JoystickGetGUIDString pair - see
+			// that method's doc comment for the JVM-killing access violation a
+			// stale index causes there.
+			int index = -1;
+			int count = SdlJoystick.SDL_NumJoysticks();
+			for (int i = 0; i < count; i++) {
+				if (guid.equalsIgnoreCase(deviceGuid(i))) {
+					index = i;
+					break;
+				}
+			}
+			if (index < 0) return false;
 
-		// Open the new handle *before* closing the old one, not after -
-		// SDL_JoystickOpen tolerates a since-gone index fine (confirmed:
-		// returns null rather than crashing, twice now), so there's no need
-		// to re-verify its result via another native GUID query. An earlier
-		// version of this method tried exactly that re-verification -
-		// SDL_JoystickGetGUID(handle) followed by SDL_JoystickGetGUIDString -
-		// and that crashed the JVM too (EXCEPTION_ACCESS_VIOLATION), even
-		// though the handle itself was a valid, just-opened, non-null
-		// SDL_Joystick. So: no GUID query on a live handle, ever, in this
-		// environment - deviceGuid()'s index-based query is the only one
-		// that's held up under testing. Briefly holding both the old and new
-		// handles open across this call is fine - SdlForceFeedback already
-		// does exactly that with its own separate handle to the same device.
-		SDL_Joystick opened = SdlJoystick.SDL_JoystickOpen(index);
-		if (opened == null) return false;
-		close();
-		openJoystick = opened;
-		openGuid = guid;
-		return true;
+			// Open the new handle *before* closing the old one, not after -
+			// SDL_JoystickOpen tolerates a since-gone index fine (confirmed:
+			// returns null rather than crashing, twice now), so there's no need
+			// to re-verify its result via another native GUID query. An earlier
+			// version of this method tried exactly that re-verification -
+			// SDL_JoystickGetGUID(handle) followed by SDL_JoystickGetGUIDString -
+			// and that crashed the JVM too (EXCEPTION_ACCESS_VIOLATION), even
+			// though the handle itself was a valid, just-opened, non-null
+			// SDL_Joystick. So: no GUID query on a live handle, ever, in this
+			// environment - deviceGuid()'s index-based query is the only one
+			// that's held up under testing. Briefly holding both the old and new
+			// handles open across this call is fine - SdlForceFeedback already
+			// does exactly that with its own separate handle to the same device.
+			SDL_Joystick opened = SdlJoystick.SDL_JoystickOpen(index);
+			if (opened == null) return false;
+			close();
+			openJoystick = opened;
+			openGuid = guid;
+			return true;
+		} catch (Throwable t) {
+			WheelClientMain.LOGGER.warn("[Wheel] open() failed for guid {}", guid, t);
+			return false;
+		}
 	}
 
 	public static void close() {
 		if (openJoystick != null) {
-			SdlJoystick.SDL_JoystickClose(openJoystick);
+			try {
+				SdlJoystick.SDL_JoystickClose(openJoystick);
+			} catch (Throwable t) {
+				WheelClientMain.LOGGER.warn("[Wheel] SDL_JoystickClose failed", t);
+			}
 			openJoystick = null;
 			openGuid = null;
 		}
@@ -160,8 +184,12 @@ public final class SdlJoystickReader {
 	/** Name of the currently open device, or "" if none is open. */
 	public static String openName() {
 		if (openJoystick == null) return "";
-		String name = SdlJoystick.SDL_JoystickName(openJoystick);
-		return name != null ? name : "";
+		try {
+			String name = SdlJoystick.SDL_JoystickName(openJoystick);
+			return name != null ? name : "";
+		} catch (Throwable t) {
+			return "";
+		}
 	}
 
 	/** Number of joystick devices SDL currently sees, present or not (not just the one this class has open). */
@@ -195,6 +223,22 @@ public final class SdlJoystickReader {
 	 * SDL_JoystickGetGUIDString then walks off the end of - an
 	 * EXCEPTION_ACCESS_VIOLATION that takes the whole JVM down with no
 	 * catchable exception, confirmed from a crash in exactly this path.
+	 *
+	 * A second, separate failure mode in this same pair was later confirmed
+	 * from a real hs_err dump: `guid` is a JNA Structure returned by value
+	 * from SDL_JoystickGetDeviceGUID, backed by its own JNA-managed native
+	 * buffer - with nothing else in the method reading the Java field after
+	 * it's handed to SDL_JoystickGetGUIDString, a C2-JITted build of this
+	 * method can treat `guid` as dead the moment its value is passed in,
+	 * before that call has actually returned. If G1's concurrent reference
+	 * processing reclaims that buffer in the same window (the crashing
+	 * hs_err showed a live java.lang.ref.ReferenceQueue sitting in two
+	 * registers at the fault, with the crash inside SDL_JoystickGetGUIDString
+	 * itself, a valid index), SDL_JoystickGetGUIDString ends up reading
+	 * already-freed memory - a *different* bug from the stale-index one
+	 * above, and one isValidDeviceIndex() can't do anything about since the
+	 * index here was perfectly valid. reachabilityFence keeps `guid` strongly
+	 * reachable through the end of that call, closing the window.
 	 */
 	public static String deviceGuid(int index) {
 		if (!isValidDeviceIndex(index)) return null;
@@ -202,6 +246,7 @@ public final class SdlJoystickReader {
 			SDL_JoystickGUID guid = SdlJoystick.SDL_JoystickGetDeviceGUID(index);
 			if (guid == null) return null;
 			String s = SdlJoystick.SDL_JoystickGetGUIDString(guid);
+			java.lang.ref.Reference.reachabilityFence(guid);
 			return s == null || s.isEmpty() ? null : s;
 		} catch (Throwable t) {
 			return null;
@@ -217,32 +262,70 @@ public final class SdlJoystickReader {
 		}
 	}
 
+	// Handle-based reads (button/axis/hat) below are called from the client
+	// tick's hottest per-frame paths (WheelInput.tick(), WheelDrivingControl's
+	// isDown(), the calibration wizard's per-tick scan) - dozens of native
+	// calls per tick across a whole session. SDL itself is designed to make
+	// these safe even against a detached-but-not-yet-closed handle (unlike
+	// the index-based GUID query above, which is the one confirmed to
+	// segfault on a stale value) - but try/catch here costs nothing on the
+	// success path and is cheap insurance against whatever this exact
+	// SDL2/DirectInput/driver stack does that isn't in any spec.
 	public static int buttonCount() {
-		return openJoystick != null ? SdlJoystick.SDL_JoystickNumButtons(openJoystick) : 0;
+		if (openJoystick == null) return 0;
+		try {
+			return SdlJoystick.SDL_JoystickNumButtons(openJoystick);
+		} catch (Throwable t) {
+			return 0;
+		}
 	}
 
 	public static boolean buttonDown(int index) {
-		return openJoystick != null && SdlJoystick.SDL_JoystickGetButton(openJoystick, index) != 0;
+		if (openJoystick == null) return false;
+		try {
+			return SdlJoystick.SDL_JoystickGetButton(openJoystick, index) != 0;
+		} catch (Throwable t) {
+			return false;
+		}
 	}
 
 	public static int axisCount() {
-		return openJoystick != null ? SdlJoystick.SDL_JoystickNumAxes(openJoystick) : 0;
+		if (openJoystick == null) return 0;
+		try {
+			return SdlJoystick.SDL_JoystickNumAxes(openJoystick);
+		} catch (Throwable t) {
+			return 0;
+		}
 	}
 
 	/** Normalized to roughly -1.0..1.0 from SDL's raw Sint16 axis range - see this class's doc comment. */
 	public static float axisValue(int index) {
 		if (openJoystick == null) return 0f;
-		short raw = SdlJoystick.SDL_JoystickGetAxis(openJoystick, index);
-		return Math.max(-1f, raw / 32767f);
+		try {
+			short raw = SdlJoystick.SDL_JoystickGetAxis(openJoystick, index);
+			return Math.max(-1f, raw / 32767f);
+		} catch (Throwable t) {
+			return 0f;
+		}
 	}
 
 	public static int hatCount() {
-		return openJoystick != null ? SdlJoystick.SDL_JoystickNumHats(openJoystick) : 0;
+		if (openJoystick == null) return 0;
+		try {
+			return SdlJoystick.SDL_JoystickNumHats(openJoystick);
+		} catch (Throwable t) {
+			return 0;
+		}
 	}
 
 	/** Raw SDL_HAT_* bitmask (centered/up/right/down/left, or a diagonal OR of two) - numerically identical to GLFW's own hat convention. */
 	public static byte hatValue(int index) {
-		return openJoystick != null ? SdlJoystick.SDL_JoystickGetHat(openJoystick, index) : SdlJoystickConst.SDL_HAT_CENTERED;
+		if (openJoystick == null) return SdlJoystickConst.SDL_HAT_CENTERED;
+		try {
+			return SdlJoystick.SDL_JoystickGetHat(openJoystick, index);
+		} catch (Throwable t) {
+			return SdlJoystickConst.SDL_HAT_CENTERED;
+		}
 	}
 
 	public static boolean isHatCentered(byte value) {

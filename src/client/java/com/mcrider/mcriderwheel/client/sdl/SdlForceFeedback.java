@@ -119,13 +119,20 @@ public final class SdlForceFeedback {
 		}
 	}
 
-	/** Null if the index isn't currently a real device - see SdlJoystickReader.deviceGuid() for why a stale index here is a JVM-killing access violation rather than a benign miss. */
+	/**
+	 * Null if the index isn't currently a real device - see
+	 * SdlJoystickReader.deviceGuid() for why a stale index here is a
+	 * JVM-killing access violation rather than a benign miss, and for the
+	 * separate confirmed-by-hs_err reason `guid` needs the
+	 * reachabilityFence below even when the index is perfectly valid.
+	 */
 	public static String mcrider_ffb_device_guid(int index) {
 		if (!isValidDeviceIndex(index)) return null;
 		try {
 			SDL_JoystickGUID guid = SdlJoystick.SDL_JoystickGetDeviceGUID(index);
 			if (guid == null) return null;
 			String s = SdlJoystick.SDL_JoystickGetGUIDString(guid);
+			java.lang.ref.Reference.reachabilityFence(guid);
 			return s == null || s.isEmpty() ? null : s;
 		} catch (Throwable t) {
 			return null;

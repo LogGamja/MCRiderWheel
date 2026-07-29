@@ -322,21 +322,34 @@ public class WheelCalibrationScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
-		updateWidgetVisibility();
-		ensureDeviceSelected();
-		SdlJoystickReader.update();
-		// Retried every tick, not just from init() - if SDL hadn't finished
-		// enumerating the device yet the first time init() ran (same
-		// hotplug-detection lag ensureDeviceSelected() already retries for),
-		// profile stayed null for the rest of the button-mapping phase and
-		// isExcludedAxis() had nothing to exclude the steer/throttle/brake
-		// axes with, letting them get captured as misc buttons. Cheap no-op
-		// once profile is already loaded.
-		ensureProfile();
-		if (step == Step.BUTTON_NOISE_SAMPLE) {
-			runNoiseSample();
-		} else {
-			checkInputCapture();
+		// Wrapped as a whole: an uncaught exception out of Screen.tick() takes
+		// the whole client down, and everything below here does a lot of
+		// per-axis/per-button array indexing (checkInputCapture,
+		// runNoiseSample) driven by whatever a given device's live axis/button
+		// count happens to be that tick - a device that changes shape mid-wizard
+		// (hotplug, a mode-switching wheel) is exactly the kind of edge case
+		// this is cheap insurance against. Doesn't touch the underlying SDL
+		// calls' own try/catches (SdlJoystickReader) - this is a second,
+		// outermost net for anything Java-level those don't cover.
+		try {
+			updateWidgetVisibility();
+			ensureDeviceSelected();
+			SdlJoystickReader.update();
+			// Retried every tick, not just from init() - if SDL hadn't finished
+			// enumerating the device yet the first time init() ran (same
+			// hotplug-detection lag ensureDeviceSelected() already retries for),
+			// profile stayed null for the rest of the button-mapping phase and
+			// isExcludedAxis() had nothing to exclude the steer/throttle/brake
+			// axes with, letting them get captured as misc buttons. Cheap no-op
+			// once profile is already loaded.
+			ensureProfile();
+			if (step == Step.BUTTON_NOISE_SAMPLE) {
+				runNoiseSample();
+			} else {
+				checkInputCapture();
+			}
+		} catch (Throwable t) {
+			WheelClientMain.LOGGER.error("[MCRiderWheel] calibration screen tick failed - continuing", t);
 		}
 	}
 
