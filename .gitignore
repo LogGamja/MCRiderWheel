@@ -1,0 +1,44 @@
+# gradle
+
+.gradle/
+build/
+out/
+classes/
+
+# eclipse
+
+*.launch
+
+# idea
+
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# vscode
+
+.settings/
+.vscode/
+bin/
+.classpath
+.project
+
+# macos
+
+*.DS_Store
+
+# fabric
+
+run/
+
+# native build toolchain (vendored MinGW-w64 + SDL2, ~76MB of binaries)
+
+native/toolchain/
+
+# java
+
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr

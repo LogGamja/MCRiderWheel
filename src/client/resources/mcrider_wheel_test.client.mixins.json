@@ -1,0 +1,13 @@
+{
+	"required": true,
+	"package": "com.mcrider.wheeltest.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"PauseScreenMixin",
+		"LocalPlayerSprintMixin",
+		"SoundPacketMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

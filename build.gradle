@@ -1,0 +1,102 @@
+plugins {
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+repositories {
+	mavenCentral()
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"mcrider_wheel_test" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	// To change the versions see the gradle.properties file
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	// Fabric API. This is technically optional, but you probably want it anyway.
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// JNA: libsdl4j (below) declares this as a compile dependency, so it
+	// resolves fine for compilation without an explicit line here - but
+	// Loom's include() does NOT pull in a bundled dependency's own
+	// transitive deps, and libsdl4j's jar does not shade JNA's classes
+	// inside itself (confirmed by inspecting both jars directly) - so
+	// without this explicit include, the shipped mod jar would be missing
+	// com.sun.jna.* entirely and crash with NoClassDefFoundError the moment
+	// SdlJoystickReader/SdlForceFeedback touch libsdl4j on a machine that
+	// doesn't happen to have another mod providing JNA already.
+	implementation "net.java.dev.jna:jna:5.14.0"
+	include "net.java.dev.jna:jna:5.14.0"
+
+	// libsdl4j: JNA binding for SDL2 (SDL_Joystick + SDL_Haptic), published
+	// to Maven Central with Windows/Linux SDL2 natives embedded directly in
+	// the jar and extracted via JNA's standard mechanism - no extra setup.
+	// (ControllableSDL, a fork of this under com.mrcrayfish.controllable_sdl,
+	// was tried first but throws "Unsupported platform: win32-x86-64" at
+	// runtime: its own natives aren't in that library's jar at all - recent
+	// ControllableSDL versions expect them placed in the game directory by
+	// the Controllable mod's own bootstrap code, which this project doesn't
+	// have. Plain libsdl4j has no such dependency.)
+	// Both button reads (SdlJoystickReader, replacing GLFW's buggy >32-button
+	// DirectInput path - see PADDLE_SHIFTER_DEBUG_HANDOFF.md) and force
+	// feedback (SdlForceFeedback, confirmed working on real hardware - see
+	// that class's doc comment) run through this. The old native/src/
+	// mcrider_ffb.c + FfbNative/FfbNativeLoader JNA path this replaced has
+	// since been deleted.
+	implementation "io.github.libsdl4j:libsdl4j:2.28.4-1.6"
+	include "io.github.libsdl4j:libsdl4j:2.28.4-1.6"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+}
+
+java {
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+
+	from("LICENSE") {
+		rename { "${it}_$projectName"}
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+
+	repositories {
+	}
+}
