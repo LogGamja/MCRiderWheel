@@ -39,8 +39,19 @@ dependencies {
 	// com.sun.jna.* entirely and crash with NoClassDefFoundError the moment
 	// SdlJoystickReader/SdlForceFeedback touch libsdl4j on a machine that
 	// doesn't happen to have another mod providing JNA already.
-	implementation "net.java.dev.jna:jna:5.14.0"
-	include "net.java.dev.jna:jna:5.14.0"
+	//
+	// MUST stay pinned to whatever JNA Minecraft itself already ships on the
+	// classpath (1.21.5 puts 5.15.0 there for oshi) - this used to be 5.14.0,
+	// which left two different JNA versions live in one JVM: the game's 5.15.0
+	// and this mod's jar-in-jar 5.14.0. JNA's Java classes and its extracted
+	// native jnidispatch library have to be the same version, and with two
+	// copies present nothing guarantees the pairing - a real crash dump from
+	// this mod showed the fault inside jvm.dll called from jna.dll during
+	// Structure marshalling (com.sun.jna.Structure.autoWrite in-register),
+	// faulting on an address that decoded to the joystick GUID's own bytes,
+	// i.e. struct data being consumed as a pointer.
+	implementation "net.java.dev.jna:jna:5.15.0"
+	include "net.java.dev.jna:jna:5.15.0"
 
 	// libsdl4j: JNA binding for SDL2 (SDL_Joystick + SDL_Haptic), published
 	// to Maven Central with Windows/Linux SDL2 natives embedded directly in

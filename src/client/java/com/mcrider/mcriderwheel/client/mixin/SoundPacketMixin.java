@@ -4,9 +4,11 @@ import com.mcrider.mcriderwheel.client.RiddenVehicle;
 import com.mcrider.mcriderwheel.client.ffb.WheelForceFeedback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.core.Holder;
 import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundEvent;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -29,17 +31,25 @@ public abstract class SoundPacketMixin {
 
 	@Inject(method = "handleSoundEvent", at = @At("HEAD"))
 	private void mcriderWheel$onSoundEvent(ClientboundSoundPacket packet, CallbackInfo ci) {
-		handle(packet.getSound().value().location());
+		handle(packet.getSound());
 	}
 
 	@Inject(method = "handleSoundEntityEvent", at = @At("HEAD"))
 	private void mcriderWheel$onSoundEntityEvent(ClientboundSoundEntityPacket packet, CallbackInfo ci) {
-		handle(packet.getSound().value().location());
+		handle(packet.getSound());
 	}
 
-	private static void handle(ResourceLocation soundLocation) {
-		if (!ATTACK_DOOR_SOUND.equals(soundLocation)) return;
-
+	/**
+	 * Takes the raw Holder rather than an already-resolved ResourceLocation so
+	 * the thread check below happens before anything is read off the packet:
+	 * resolving it at the call site instead meant Holder.value() - a registry
+	 * dereference - ran on the netty thread for every sound packet the server
+	 * sent, only for the result to be thrown away one line later. Worse, an
+	 * unbound holder makes value() throw, and doing that inside a HEAD
+	 * injection on the netty thread surfaces as an "Internal Exception"
+	 * disconnect rather than anything this mod could recover from.
+	 */
+	private static void handle(Holder<SoundEvent> sound) {
 		Minecraft client = Minecraft.getInstance();
 		// Both handlers' real bodies open with PacketUtils.ensureRunningOnSameThread(),
 		// which - when we're not already on the main thread - reschedules the whole
@@ -51,6 +61,17 @@ public abstract class SoundPacketMixin {
 		// thread call pulse() concurrently with tick()'s set_force()/stop() on the
 		// same handle is exactly the kind of native-side race that crashes the JVM.
 		if (!client.isSameThread()) return;
+
+		ResourceLocation soundLocation;
+		try {
+			soundLocation = sound.value().location();
+		} catch (Throwable t) {
+			// An exception escaping a HEAD injection aborts vanilla's own packet
+			// handling, so a malformed/unbound sound holder would take the
+			// connection down over a purely cosmetic FFB cue.
+			return;
+		}
+		if (!ATTACK_DOOR_SOUND.equals(soundLocation)) return;
 
 		// A player riding directly has cameraEntity == the player, while
 		// spectating another entity (e.g. via the player list) points

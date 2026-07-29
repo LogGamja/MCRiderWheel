@@ -13,7 +13,6 @@ import io.github.libsdl4j.api.haptic.SdlHapticConst;
 import io.github.libsdl4j.api.haptic.effect.SDL_HapticConstant;
 import io.github.libsdl4j.api.haptic.effect.SDL_HapticPeriodic;
 import io.github.libsdl4j.api.joystick.SDL_Joystick;
-import io.github.libsdl4j.api.joystick.SDL_JoystickGUID;
 import io.github.libsdl4j.api.joystick.SdlJoystick;
 
 /**
@@ -129,11 +128,7 @@ public final class SdlForceFeedback {
 	public static String mcrider_ffb_device_guid(int index) {
 		if (!isValidDeviceIndex(index)) return null;
 		try {
-			SDL_JoystickGUID guid = SdlJoystick.SDL_JoystickGetDeviceGUID(index);
-			if (guid == null) return null;
-			String s = SdlJoystick.SDL_JoystickGetGUIDString(guid);
-			java.lang.ref.Reference.reachabilityFence(guid);
-			return s == null || s.isEmpty() ? null : s;
+			return SdlJoystickReader.formatJoystickGuid(SdlJoystick.SDL_JoystickGetDeviceGUID(index));
 		} catch (Throwable t) {
 			return null;
 		}

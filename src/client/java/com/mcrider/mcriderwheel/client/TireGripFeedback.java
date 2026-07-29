@@ -23,15 +23,8 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
  */
 public final class TireGripFeedback {
 	private static final int GRIP_ENGINE_ID = 1006;
-	// XP-bar fraction where the grip-loss vibration starts ramping in; below
-	// this, grip is assumed fine and nothing is fed back.
 	private static final float GRIP_RAMP_START = 0.25f;
-	// Caps how strong the ramp gets by the time the gauge hits 100% (1f would
-	// mean full-strength, matching isDrifting) - lower this to flatten the
-	// ramp's slope without moving where it starts.
-	private static final float GRIP_RAMP_MAX_MAGNITUDE = 0.2f;
-	// Vibration strength while state-drift is active, independent of the ramp above.
-	private static final float DRIFT_MAGNITUDE = 0.2f;
+	private static final float GRIP_RAMP_MAX_MAGNITUDE = 0.18f;
 
 	private TireGripFeedback() {
 	}
@@ -66,15 +59,13 @@ public final class TireGripFeedback {
 		Double drifting = modifierAmount(armor, "state-drift");
 		boolean isDrifting = drifting != null && drifting >= 0.5;
 
-		float magnitude;
-		if (isDrifting) {
-			magnitude = DRIFT_MAGNITUDE;
-		} else {
-			float gripProgress = client.player.experienceProgress;
-			magnitude = gripProgress > GRIP_RAMP_START
-					? (gripProgress - GRIP_RAMP_START) / (1f - GRIP_RAMP_START) * GRIP_RAMP_MAX_MAGNITUDE
-					: 0f;
-		}
+		// A real slide is always fed through as the gauge reading 100%, not
+		// whatever the reset briefly leaves on the XP bar - state-drift is
+		// what actually says the tires are broken loose, the bar doesn't.
+		float gripProgress = isDrifting ? 1f : client.player.experienceProgress;
+		float magnitude = gripProgress > GRIP_RAMP_START
+				? (gripProgress - GRIP_RAMP_START) / (1f - GRIP_RAMP_START) * GRIP_RAMP_MAX_MAGNITUDE
+				: 0f;
 
 		WheelForceFeedback.setGripVibrationMagnitude(magnitude);
 	}

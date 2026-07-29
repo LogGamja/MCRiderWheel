@@ -21,9 +21,12 @@ import java.util.List;
  * an unplugged preferred wheel just falls back to that first-found
  * behavior rather than leaving nothing driveable.
  *
- * Only calibrated devices are listed: an uncalibrated one has no profile for
- * WheelInput to drive from, so preferring it would silently do nothing.
- * Calibrate it from the settings screen first and it shows up here.
+ * Only devices that can actually steer are listed - not merely ones with
+ * *some* saved profile. A device that only ever went through BUTTONS_ONLY
+ * saves a profile with steerAxis = -1, which WheelInput skips outright, so
+ * listing it would let the player pick a wheel, watch the [선택됨] marker
+ * move to it, and have a different one keep driving. Calibrate steering from
+ * the settings screen first and it shows up here.
  */
 public class WheelDeviceSelectScreen extends Screen {
 	private final Screen parent;
@@ -78,13 +81,15 @@ public class WheelDeviceSelectScreen extends Screen {
 		rebuildWidgets();
 	}
 
-	/** Every currently-connected device that already has a saved WheelProfile, in SDL's own enumeration order. */
+	/** Every currently-connected device with a saved, driveable WheelProfile, in SDL's own enumeration order - the same isDriveable() filter WheelInput.tick() applies, so anything listed here can actually win the preference. */
 	private static List<String> calibratedConnectedGuids() {
 		List<String> guids = new ArrayList<>();
 		int count = SdlJoystickReader.deviceCount();
 		for (int i = 0; i < count; i++) {
 			String guid = SdlJoystickReader.deviceGuid(i);
-			if (guid != null && WheelConfig.get(guid) != null) {
+			if (guid == null) continue;
+			WheelProfile profile = WheelConfig.get(guid);
+			if (profile != null && profile.isDriveable()) {
 				guids.add(guid);
 			}
 		}
@@ -100,7 +105,7 @@ public class WheelDeviceSelectScreen extends Screen {
 	public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
 		super.render(g, mouseX, mouseY, partialTick);
 		g.drawCenteredString(font, title, width / 2, height / 2 - 90, 0xFFFFFF);
-		g.drawCenteredString(font, Component.literal("보정하지 않은 휠은 표시되지 않습니다"),
+		g.drawCenteredString(font, Component.literal("조향 보정을 마치지 않은 휠은 표시되지 않습니다"),
 				width / 2, listTop - 16, 0xAAAAAA);
 	}
 

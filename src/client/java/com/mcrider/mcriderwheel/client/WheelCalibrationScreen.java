@@ -36,7 +36,8 @@ public class WheelCalibrationScreen extends Screen {
 	private enum Step {
 		INTRO, CENTER, LEFT, RIGHT, REF90, LOCK_RANGE_SELECT, THROTTLE_UP, THROTTLE_DOWN, BRAKE_UP, BRAKE_DOWN,
 		BUTTON_NOISE_SAMPLE, GEAR_DOWN_BUTTON, GEAR_UP_BUTTON, BOOSTER_BUTTON, SPECIAL_BUTTON, LEFT_CLICK_BUTTON,
-		RIGHT_CLICK_BUTTON, LOOK_UP_BUTTON, LOOK_DOWN_BUTTON, DONE
+		RIGHT_CLICK_BUTTON, LOOK_UP_BUTTON, LOOK_DOWN_BUTTON, CROUCH_BUTTON, SWAP_HANDS_BUTTON, VIEW_TOGGLE_BUTTON,
+		HOTBAR_SHIFT_BUTTON, DONE
 	}
 
 	/** Axis must move at least this far from its baseline to count as a deliberate press (filters out drift/noise). */
@@ -174,6 +175,10 @@ public class WheelCalibrationScreen extends Screen {
 	private InputBinding rightClick = new InputBinding();
 	private InputBinding lookUp = new InputBinding();
 	private InputBinding lookDown = new InputBinding();
+	private InputBinding crouch = new InputBinding();
+	private InputBinding swapHands = new InputBinding();
+	private InputBinding viewToggle = new InputBinding();
+	private InputBinding hotbarShift = new InputBinding();
 
 	private Button nextButton;
 	private Button skipButton;
@@ -182,12 +187,21 @@ public class WheelCalibrationScreen extends Screen {
 	// One button per device shown on the INTRO step, letting the player
 	// override findFirstDeviceGuid()'s auto-pick - see selectDevice().
 	private final java.util.List<Button> deviceButtons = new java.util.ArrayList<>();
-	// Caps how many of SdlJoystickReader's enumerated devices get their own
-	// selectable button, so a machine with an unusually large number of
-	// enumerated joysticks (virtual devices, etc.) can't push these past
-	// nextButton's fixed position below - deviceListLines() in render()
-	// still lists every device as plain text regardless of this cap.
+	// Upper bound on how many of SdlJoystickReader's enumerated devices get
+	// their own selectable button, so a machine enumerating an unusual number
+	// of joysticks (virtual devices, a wheel that splits into several entries)
+	// doesn't turn this step into an endless column. Whatever doesn't fit is
+	// reported as a count by render() rather than silently vanishing.
 	private static final int MAX_SELECTABLE_DEVICE_BUTTONS = 6;
+	// Y the nav stack ([다음] / [나가기]) starts at on the INTRO step - unlike
+	// every other step's fixed position, this has to clear the device list
+	// above it, whose length varies. Set in init(), applied every tick by
+	// updateWidgetVisibility().
+	private int introNextY;
+	// How many enumerated devices didn't get a button (cap or screen room),
+	// and where the list that did fit ends - both only for render()'s note.
+	private int hiddenDeviceCount;
+	private int deviceListBottom;
 
 	/** Opened by WheelClientMain's own auto-calibration prompt (join/hotplug), not from the settings screen - see the autoTriggered field. */
 	public WheelCalibrationScreen() {
@@ -272,26 +286,40 @@ public class WheelCalibrationScreen extends Screen {
 		// Straight under the prompt now that the device *names* are these
 		// buttons rather than a separate text list above them.
 		int devStartY = (height / 2 - 50) + introPromptLines * 10 + 10;
-		// Capped by the room actually available above [다음]'s fixed position,
-		// not just by MAX_SELECTABLE_DEVICE_BUTTONS - a machine enumerating
-		// several joysticks (virtual devices, a wheel that splits into multiple
-		// entries) would otherwise run this column straight through that button.
-		int roomForButtons = Math.max(0, (nextButton.getY() - devBtnGap - devStartY) / (devBtnHeight + devBtnGap));
-		int deviceCount = Math.min(Math.min(SdlJoystickReader.deviceCount(), MAX_SELECTABLE_DEVICE_BUTTONS), roomForButtons);
-		if (deviceCount > 0) {
-			for (int i = 0; i < deviceCount; i++) {
-				String guid = SdlJoystickReader.deviceGuid(i);
-				if (guid == null) continue;
-				String name = SdlJoystickReader.deviceName(i);
-				String label = (name.isEmpty() ? ("장치 " + (i + 1)) : name)
-						+ (guid.equalsIgnoreCase(selectedGuid) ? " [선택됨]" : "");
-				Button btn = Button.builder(Component.literal(label), b -> selectDevice(guid))
-						.bounds(width / 2 - devBtnWidth / 2, devStartY + i * (devBtnHeight + devBtnGap), devBtnWidth, devBtnHeight)
-						.build();
-				deviceButtons.add(btn);
-				addRenderableWidget(btn);
-			}
+		// Room is measured down to the bottom of the screen (minus what the
+		// stacked [다음]/[나가기] pair needs to sit below the list), not up to
+		// [다음]'s old fixed height/2 + 40 spot. Measuring against that fixed
+		// spot cancelled `height` out of the arithmetic entirely - the result
+		// was always exactly 2, on every resolution and GUI scale, which made
+		// MAX_SELECTABLE_DEVICE_BUTTONS unreachable and left a third device
+		// impossible to select (and, since nothing lists devices as text,
+		// invisible too). The nav stack now moves down to clear however many
+		// buttons actually fit - see introNextY / updateWidgetVisibility().
+		int navStackHeight = devBtnHeight * 2 + 5;
+		int roomForButtons = Math.max(0, (height - 8 - navStackHeight - devStartY) / (devBtnHeight + devBtnGap));
+		int totalDevices = SdlJoystickReader.deviceCount();
+		int selectableDevices = Math.min(Math.min(totalDevices, MAX_SELECTABLE_DEVICE_BUTTONS), roomForButtons);
+		// `placed` rather than the loop index drives the Y stepping so a device
+		// whose GUID read comes back null doesn't leave a blank slot mid-column.
+		int placed = 0;
+		for (int i = 0; i < totalDevices && placed < selectableDevices; i++) {
+			String guid = SdlJoystickReader.deviceGuid(i);
+			if (guid == null) continue;
+			String name = SdlJoystickReader.deviceName(i);
+			String label = (name.isEmpty() ? ("장치 " + (i + 1)) : name)
+					+ (guid.equalsIgnoreCase(selectedGuid) ? " [선택됨]" : "");
+			Button btn = Button.builder(Component.literal(label), b -> selectDevice(guid))
+					.bounds(width / 2 - devBtnWidth / 2, devStartY + placed * (devBtnHeight + devBtnGap), devBtnWidth, devBtnHeight)
+					.build();
+			deviceButtons.add(btn);
+			addRenderableWidget(btn);
+			placed++;
 		}
+		hiddenDeviceCount = Math.max(0, totalDevices - placed);
+		deviceListBottom = devStartY + placed * (devBtnHeight + devBtnGap);
+		// Never above where [다음] used to sit, so the common one-or-two-device
+		// case looks exactly as it did before.
+		introNextY = Math.max(height / 2 + 40, deviceListBottom + (hiddenDeviceCount > 0 ? 22 : 8));
 
 		// Without this, the lock-range buttons (added visible above) sit
 		// on screen - overlapping [다음] - for up to one tick after init()
@@ -357,8 +385,14 @@ public class WheelCalibrationScreen extends Screen {
 		boolean skippable = isButtonCaptureStep(step) || step == Step.BUTTON_NOISE_SAMPLE;
 		skipButton.visible = skippable;
 		skipButton.active = skippable;
+		// INTRO is the one step with a variable-length widget column above the
+		// nav stack (the device list), so there it starts wherever that list
+		// ends; every other step keeps the original fixed position.
+		int navTop = step == Step.INTRO ? introNextY : height / 2 + 40;
+		nextButton.setY(navTop);
+		skipButton.setY(navTop + 25);
 		// Close the gap [건너뛰기] leaves behind on the steps where it's hidden.
-		exitButton.setY(skippable ? height / 2 + 90 : height / 2 + 65);
+		exitButton.setY(navTop + (skippable ? 50 : 25));
 
 		// Auto-detected on press, or picked from the lock-range buttons, or
 		// auto-timed - clicking [다음] through these steps wouldn't mean
@@ -423,7 +457,8 @@ public class WheelCalibrationScreen extends Screen {
 	private boolean isButtonCaptureStep(Step s) {
 		return s == Step.GEAR_DOWN_BUTTON || s == Step.GEAR_UP_BUTTON || s == Step.BOOSTER_BUTTON
 				|| s == Step.SPECIAL_BUTTON || s == Step.LEFT_CLICK_BUTTON || s == Step.RIGHT_CLICK_BUTTON
-				|| s == Step.LOOK_UP_BUTTON || s == Step.LOOK_DOWN_BUTTON;
+				|| s == Step.LOOK_UP_BUTTON || s == Step.LOOK_DOWN_BUTTON || s == Step.CROUCH_BUTTON
+				|| s == Step.SWAP_HANDS_BUTTON || s == Step.VIEW_TOGGLE_BUTTON || s == Step.HOTBAR_SHIFT_BUTTON;
 	}
 
 	/**
@@ -765,6 +800,22 @@ public class WheelCalibrationScreen extends Screen {
 			}
 			case LOOK_DOWN_BUTTON -> {
 				lookDown = binding;
+				step = Step.CROUCH_BUTTON;
+			}
+			case CROUCH_BUTTON -> {
+				crouch = binding;
+				step = Step.SWAP_HANDS_BUTTON;
+			}
+			case SWAP_HANDS_BUTTON -> {
+				swapHands = binding;
+				step = Step.VIEW_TOGGLE_BUTTON;
+			}
+			case VIEW_TOGGLE_BUTTON -> {
+				viewToggle = binding;
+				step = Step.HOTBAR_SHIFT_BUTTON;
+			}
+			case HOTBAR_SHIFT_BUTTON -> {
+				hotbarShift = binding;
 				computeButtonFields();
 				goTo(Step.DONE);
 			}
@@ -805,7 +856,11 @@ public class WheelCalibrationScreen extends Screen {
 			case LEFT_CLICK_BUTTON -> step = Step.RIGHT_CLICK_BUTTON;
 			case RIGHT_CLICK_BUTTON -> step = Step.LOOK_UP_BUTTON;
 			case LOOK_UP_BUTTON -> step = Step.LOOK_DOWN_BUTTON;
-			case LOOK_DOWN_BUTTON -> {
+			case LOOK_DOWN_BUTTON -> step = Step.CROUCH_BUTTON;
+			case CROUCH_BUTTON -> step = Step.SWAP_HANDS_BUTTON;
+			case SWAP_HANDS_BUTTON -> step = Step.VIEW_TOGGLE_BUTTON;
+			case VIEW_TOGGLE_BUTTON -> step = Step.HOTBAR_SHIFT_BUTTON;
+			case HOTBAR_SHIFT_BUTTON -> {
 				computeButtonFields();
 				goTo(Step.DONE);
 			}
@@ -955,6 +1010,10 @@ public class WheelCalibrationScreen extends Screen {
 		rightClick = profile.rightClick.copy();
 		lookUp = profile.lookUp.copy();
 		lookDown = profile.lookDown.copy();
+		crouch = profile.crouch.copy();
+		swapHands = profile.swapHands.copy();
+		viewToggle = profile.viewToggle.copy();
+		hotbarShift = profile.hotbarShift.copy();
 	}
 
 	private void computeSteerFields() {
@@ -1066,6 +1125,10 @@ public class WheelCalibrationScreen extends Screen {
 		profile.rightClick = rightClick;
 		profile.lookUp = lookUp;
 		profile.lookDown = lookDown;
+		profile.crouch = crouch;
+		profile.swapHands = swapHands;
+		profile.viewToggle = viewToggle;
+		profile.hotbarShift = hotbarShift;
 
 		WheelClientMain.LOGGER.info("Calibrated buttons for {}", profile.name);
 	}
@@ -1138,9 +1201,13 @@ public class WheelCalibrationScreen extends Screen {
 
 		if (step == Step.INTRO) {
 			// Device names themselves are the selectable buttons (see init()) -
-			// only the nothing-connected case needs its own text line here.
+			// only the nothing-connected case, and the case of more devices
+			// existing than got a button, need their own text line here.
 			if (SdlJoystickReader.deviceCount() == 0) {
 				g.drawCenteredString(font, Component.literal("연결된 조이스틱이 없습니다"), width / 2, infoY, 0xFF5555);
+			} else if (hiddenDeviceCount > 0) {
+				g.drawCenteredString(font, Component.literal("(" + hiddenDeviceCount + "개 더 연결되어 있지만 목록에 표시할 공간이 없습니다)"),
+						width / 2, deviceListBottom + 4, 0xFFAA55);
 			}
 		} else if (!SdlJoystickReader.isOpen()) {
 			g.drawCenteredString(font, Component.literal("연결된 휠 / 조이스틱이 없습니다"), width / 2, infoY, 0xFF5555);
@@ -1236,18 +1303,23 @@ public class WheelCalibrationScreen extends Screen {
 			case BRAKE_UP -> "브레이크 페달에서 발을 떼고 [다음]을 누르세요";
 			case BRAKE_DOWN -> "브레이크 페달을 끝까지 밟은 채로 [다음]을 누르세요";
 
-			case BUTTON_NOISE_SAMPLE -> "아무것도 만지지 말고 잠시 기다려주세요\n(자꾸 흔들리는 아날로그/버튼을 미리 걸러내는 중입니다)";
+			case BUTTON_NOISE_SAMPLE -> "아무것도 만지지 말고 잠시 기다려주세요\n(자주 흔들리는 아날로그/버튼을 미리 걸러내는 중입니다)";
 
-			case GEAR_DOWN_BUTTON -> "기어 다운으로 쓸 버튼을 꾹 누르세요\n플레이어의 왼쪽 이동에 매핑됩니다";
-			case GEAR_UP_BUTTON -> "기어 업으로 쓸 버튼을 꾹 누르세요\n플레이어의 오른쪽 이동에 매핑됩니다";
+			case GEAR_DOWN_BUTTON -> "기어 다운으로 쓸 버튼을 누르세요\n플레이어의 왼쪽 이동에 매핑됩니다";
+			case GEAR_UP_BUTTON -> "기어 업으로 쓸 버튼을 누르세요\n플레이어의 오른쪽 이동에 매핑됩니다";
 
-			case BOOSTER_BUTTON -> "부스터로 쓸 버튼(또는 남는 페달)을 꾹 누르세요\n기어 다운과 같은 왼쪽 이동에 매핑됩니다";
-			case SPECIAL_BUTTON -> "익시드/차저/ERS/점프로 쓸 버튼(또는 남는 페달)을 꾹 누르세요\n플레이어의 점프에 매핑됩니다";
-			case LEFT_CLICK_BUTTON -> "좌클릭으로 쓸 버튼(또는 남는 페달)을 꾹 누르세요\n멀티 플레이에서 방장을 넘길 때 사용합니다";
-			case RIGHT_CLICK_BUTTON -> "우클릭으로 쓸 버튼(또는 남는 페달)을 꾹 누르세요\n인게임에서 버튼을 누를 때 사용합니다";
+			case BOOSTER_BUTTON -> "부스터로 쓸 버튼(또는 남는 페달)을 누르세요\n기어 다운과 같은 왼쪽 이동에 매핑됩니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case SPECIAL_BUTTON -> "익시드/차저/ERS/점프로 쓸 버튼(또는 남는 페달)을 누르세요\n플레이어의 점프에 매핑됩니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case LEFT_CLICK_BUTTON -> "좌클릭으로 쓸 버튼(또는 남는 페달)을 누르세요\n멀티 플레이에서 방장을 넘길 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case RIGHT_CLICK_BUTTON -> "우클릭으로 쓸 버튼(또는 남는 페달)을 누르세요\n인게임에서 버튼을 누를 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
 
-			case LOOK_UP_BUTTON -> "시선 위로 쓸 버튼(또는 남는 페달)을 꾹 누르세요\n시선이 돌아갔을 때 레이스 중에도 조정할 수 있습니다";
-			case LOOK_DOWN_BUTTON -> "시선 아래로 쓸 버튼(또는 남는 페달)을 꾹 누르세요\n시선이 돌아갔을 때 레이스 중에도 조정할 수 있습니다";
+			case LOOK_UP_BUTTON -> "시선 위로 쓸 버튼(또는 남는 페달)을 누르세요\n시선이 돌아갔을 때 레이스 중에도 조정할 수 있습니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case LOOK_DOWN_BUTTON -> "시선 아래로 쓸 버튼(또는 남는 페달)을 누르세요\n시선이 돌아갔을 때 레이스 중에도 조정할 수 있습니다\n지정하지 않으려면 건너뛰기를 누르세요";
+
+			case CROUCH_BUTTON -> "웅크리기로 쓸 버튼(또는 남는 페달)을 누르세요\n카트에서 내리거나 레이스를 포기할 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case SWAP_HANDS_BUTTON -> "양손 바꾸기로 쓸 버튼(또는 남는 페달)을 누르세요\n직접 카트에 탑승할 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case VIEW_TOGGLE_BUTTON -> "시점 전환으로 쓸 버튼(또는 남는 페달)을 누르세요\n1인칭, 2인칭, 3인칭 시점을 전환합니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case HOTBAR_SHIFT_BUTTON -> "핫바 시프트로 쓸 버튼(또는 남는 페달)을 누르세요\n아이템 슬롯을 오른쪽으로 한 칸 이동합니다\n지정하지 않으려면 건너뛰기를 누르세요";
 
 			case DONE -> "설정 완료! [다음]을 눌러 닫으세요";
 		};

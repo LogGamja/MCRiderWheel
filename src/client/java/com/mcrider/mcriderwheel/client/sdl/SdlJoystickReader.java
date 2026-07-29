@@ -224,33 +224,62 @@ public final class SdlJoystickReader {
 	 * EXCEPTION_ACCESS_VIOLATION that takes the whole JVM down with no
 	 * catchable exception, confirmed from a crash in exactly this path.
 	 *
-	 * A second, separate failure mode in this same pair was later confirmed
-	 * from a real hs_err dump: `guid` is a JNA Structure returned by value
-	 * from SDL_JoystickGetDeviceGUID, backed by its own JNA-managed native
-	 * buffer - with nothing else in the method reading the Java field after
-	 * it's handed to SDL_JoystickGetGUIDString, a C2-JITted build of this
-	 * method can treat `guid` as dead the moment its value is passed in,
-	 * before that call has actually returned. If G1's concurrent reference
-	 * processing reclaims that buffer in the same window (the crashing
-	 * hs_err showed a live java.lang.ref.ReferenceQueue sitting in two
-	 * registers at the fault, with the crash inside SDL_JoystickGetGUIDString
-	 * itself, a valid index), SDL_JoystickGetGUIDString ends up reading
-	 * already-freed memory - a *different* bug from the stale-index one
-	 * above, and one isValidDeviceIndex() can't do anything about since the
-	 * index here was perfectly valid. reachabilityFence keeps `guid` strongly
-	 * reachable through the end of that call, closing the window.
+	 * The string itself is now built by {@link #formatJoystickGuid} instead
+	 * of by SDL_JoystickGetGUIDString - see there for why that call is worth
+	 * avoiding entirely rather than merely guarding.
 	 */
 	public static String deviceGuid(int index) {
 		if (!isValidDeviceIndex(index)) return null;
 		try {
-			SDL_JoystickGUID guid = SdlJoystick.SDL_JoystickGetDeviceGUID(index);
-			if (guid == null) return null;
-			String s = SdlJoystick.SDL_JoystickGetGUIDString(guid);
-			java.lang.ref.Reference.reachabilityFence(guid);
-			return s == null || s.isEmpty() ? null : s;
+			return formatJoystickGuid(SdlJoystick.SDL_JoystickGetDeviceGUID(index));
 		} catch (Throwable t) {
 			return null;
 		}
+	}
+
+	private static final char[] HEX_LOWER = "0123456789abcdef".toCharArray();
+
+	/**
+	 * Builds the same 32-character lowercase hex string
+	 * SDL_JoystickGetGUIDString would return, but purely in Java.
+	 *
+	 * libsdl4j maps SDL's {@code Uint8 data[16]} as SDL_GUID's two plain
+	 * {@code long} fields (leastSigBits then mostSigBits), and a by-value
+	 * struct return has already been decoded into those Java primitives by
+	 * the time it lands here - so the hex string can be assembled from them
+	 * without handing the struct back into native code at all.
+	 *
+	 * That matters because handing it back is what crashed: a real hs_err
+	 * dump caught the fault inside jvm.dll called from jna.dll with
+	 * com.sun.jna.Structure.autoWrite in-register, faulting on address
+	 * 0x0000346ec5c30003 - which is exactly this project's own wheel's GUID
+	 * first eight bytes (03 00 c3 c5 6e 34 00 00 -> "0300c3c56e340000"),
+	 * i.e. the struct's own contents being dereferenced as a pointer during
+	 * by-value marshalling. Not calling into that path is a real fix rather
+	 * than a narrowing of the window.
+	 *
+	 * Byte order follows nativeOrder() so the bytes come back out in the same
+	 * order SDL laid them down in the struct, on any platform.
+	 */
+	static String formatJoystickGuid(SDL_JoystickGUID guid) {
+		if (guid == null) return null;
+		java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.nativeOrder());
+		buf.putLong(guid.leastSigBits);
+		buf.putLong(guid.mostSigBits);
+		byte[] data = buf.array();
+
+		StringBuilder sb = new StringBuilder(32);
+		boolean allZero = true;
+		for (byte b : data) {
+			if (b != 0) allZero = false;
+			sb.append(HEX_LOWER[(b >> 4) & 0xF]).append(HEX_LOWER[b & 0xF]);
+		}
+		// SDL uses an all-zero GUID for "not a real device", so this doubles as
+		// the null case - and also covers the (never-observed) possibility of a
+		// by-value return not having been decoded into the Java fields at all,
+		// which would otherwise silently collapse every device onto one shared
+		// all-zero identity and cross-wire their saved profiles.
+		return allZero ? null : sb.toString();
 	}
 
 	private static boolean isValidDeviceIndex(int index) {

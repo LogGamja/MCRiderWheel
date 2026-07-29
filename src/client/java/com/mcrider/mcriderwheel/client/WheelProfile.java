@@ -54,6 +54,13 @@ public class WheelProfile {
 	// Convenience look up/down - fixed speed, not a real control input.
 	public InputBinding lookUp = new InputBinding();
 	public InputBinding lookDown = new InputBinding();
+	// Dismount/give-up (sneak), mount outside the race system (swap-hands/F),
+	// camera perspective cycling, and hotbar slot shift - all convenience
+	// bindings, none of them affect actual driving.
+	public InputBinding crouch = new InputBinding();
+	public InputBinding swapHands = new InputBinding();
+	public InputBinding viewToggle = new InputBinding();
+	public InputBinding hotbarShift = new InputBinding();
 
 	/**
 	 * Whether this profile can actually steer. A calibration run that failed to
@@ -95,6 +102,10 @@ public class WheelProfile {
 		c.rightClick = rightClick.copy();
 		c.lookUp = lookUp.copy();
 		c.lookDown = lookDown.copy();
+		c.crouch = crouch.copy();
+		c.swapHands = swapHands.copy();
+		c.viewToggle = viewToggle.copy();
+		c.hotbarShift = hotbarShift.copy();
 		return c;
 	}
 }

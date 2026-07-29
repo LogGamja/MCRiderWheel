@@ -450,32 +450,44 @@ public final class WheelForceFeedback {
 			return;
 		}
 
+		// Centering is computed first, as a signed value, regardless of grip
+		// vibration - direction=0 <-> sign +1 and direction=180 <-> sign -1
+		// (see mcrider_ffb_set_force's own sign convention), so this and the
+		// vibration's signed swing below can be summed into one net force
+		// instead of grip vibration replacing centering outright.
+		float steering = WheelInput.steering; // -1 (left) .. 1 (right)
+		float centerMagnitude = Math.min(1f, Math.abs(steering) * STRENGTH);
+		// Soft lock: once the wheel is turned past the configured steering
+		// lock (only possible if that lock is narrower than the wheel's
+		// real physical range), ramp the centering force up to full
+		// strength so the end-stop feels like a hard physical wall.
+		float overTravel = WheelInput.steerOverTravel;
+		if (overTravel > 0f) {
+			centerMagnitude = centerMagnitude + (1f - centerMagnitude) * overTravel;
+		}
+		if (extraResistance) {
+			centerMagnitude = Math.min(1f, centerMagnitude + EXTRA_RESISTANCE_BOOST);
+		}
+		centerMagnitude = Math.min(1f, centerMagnitude * strengthMultiplier());
+		float centerSigned = steering >= 0 ? centerMagnitude : -centerMagnitude;
+
 		float magnitude;
 		float direction;
 		if (gripVibrationMagnitude > 0f) {
-			// Tires losing grip take over the channel entirely instead of
-			// blending with centering - fighting a real slide with a
-			// centering pull at the same time would just read as extra
-			// resistance, not a slide.
-			magnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
+			// Overlaid on top of centering rather than replacing it - a slide
+			// with the wheel's restoring pull switched off entirely reads as
+			// the wheel going limp, not as losing grip. Summing the
+			// vibration's signed swing onto centerSigned keeps some pull
+			// toward center alive underneath the buzz.
+			float vibMagnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
 			vibrationPhaseTicks++;
 			boolean phaseHigh = (vibrationPhaseTicks / VIBRATION_HALF_PERIOD_TICKS) % 2 == 0;
-			direction = phaseHigh ? 0f : 180f;
+			float vibSigned = phaseHigh ? vibMagnitude : -vibMagnitude;
+			float netSigned = Math.max(-1f, Math.min(1f, centerSigned + vibSigned));
+			magnitude = Math.abs(netSigned);
+			direction = netSigned >= 0 ? 0f : 180f;
 		} else {
-			float steering = WheelInput.steering; // -1 (left) .. 1 (right)
-			magnitude = Math.min(1f, Math.abs(steering) * STRENGTH);
-			// Soft lock: once the wheel is turned past the configured steering
-			// lock (only possible if that lock is narrower than the wheel's
-			// real physical range), ramp the centering force up to full
-			// strength so the end-stop feels like a hard physical wall.
-			float overTravel = WheelInput.steerOverTravel;
-			if (overTravel > 0f) {
-				magnitude = magnitude + (1f - magnitude) * overTravel;
-			}
-			if (extraResistance) {
-				magnitude = Math.min(1f, magnitude + EXTRA_RESISTANCE_BOOST);
-			}
-			magnitude = Math.min(1f, magnitude * strengthMultiplier());
+			magnitude = centerMagnitude;
 			// Push opposite to the turn direction so the wheel self-centers
 			// instead of reinforcing the turn - measured against the real
 			// device, this is the correct sign (do not "simplify" back to

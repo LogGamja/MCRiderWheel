@@ -5,6 +5,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.player.Inventory;
 import org.lwjgl.glfw.GLFW;
 
 /**
@@ -64,6 +65,11 @@ public class WheelDrivingControl {
 	// consumeClick(), which is driven by KeyMapping.click()'s static
 	// clickCount, not by isDown - so a rising edge needs its own click().
 	private static boolean prevWheelAttack;
+	// Same rising-edge-only treatment for the convenience bindings below -
+	// none of these are meant to repeat every tick while held.
+	private static boolean prevWheelSwapHands;
+	private static boolean prevWheelViewToggle;
+	private static boolean prevWheelHotbarShift;
 	// Whether the previous tick was actually driving from the wheel - see the
 	// falling-edge release in tick().
 	private static boolean wasWheelReady;
@@ -88,7 +94,11 @@ public class WheelDrivingControl {
 		client.options.keyJump.setDown(false);
 		client.options.keyAttack.setDown(false);
 		client.options.keyUse.setDown(false);
+		client.options.keyShift.setDown(false);
 		prevWheelAttack = false;
+		prevWheelSwapHands = false;
+		prevWheelViewToggle = false;
+		prevWheelHotbarShift = false;
 	}
 
 	public static void tick(Minecraft client) {
@@ -110,7 +120,16 @@ public class WheelDrivingControl {
 		// pressed (or a wheel just off-center) keeps moving/turning the
 		// player while the game window isn't even in front.
 		if (client.player == null || client.screen != null || !client.isWindowActive()) {
-			releaseAll(client);
+			// Only release keys this class could actually be holding - releasing
+			// unconditionally would stomp another mod's setDown() every tick any
+			// screen is open, even with no wheel connected, which is exactly what
+			// the wheelReady guard further down exists to prevent. Clearing
+			// wasWheelReady makes this one-shot on the falling edge for the same
+			// reason.
+			if (WheelInput.available || wasWheelReady) {
+				releaseAll(client);
+				wasWheelReady = false;
+			}
 			return;
 		}
 
@@ -127,6 +146,10 @@ public class WheelDrivingControl {
 		boolean wheelJump = wheelReady && profile != null && isDown(profile.special);
 		boolean wheelAttack = wheelReady && profile != null && isDown(profile.leftClick);
 		boolean wheelUse = wheelReady && profile != null && isDown(profile.rightClick);
+		boolean wheelCrouch = wheelReady && profile != null && isDown(profile.crouch);
+		boolean wheelSwapHands = wheelReady && profile != null && isDown(profile.swapHands);
+		boolean wheelViewToggle = wheelReady && profile != null && isDown(profile.viewToggle);
+		boolean wheelHotbarShift = wheelReady && profile != null && isDown(profile.hotbarShift);
 
 		// Vanilla's AFK frame-rate limiter (FramerateLimitTracker) only resets
 		// its idle timer from the real GLFW keyboard/mouse callbacks - it never
@@ -136,6 +159,7 @@ public class WheelDrivingControl {
 		// activity (not just "a wheel is connected") keeps that from firing
 		// without disabling the AFK limiter for players who are actually idle.
 		boolean wheelActive = wheelReady && (wheelLeft || wheelRight || wheelJump || wheelAttack || wheelUse
+				|| wheelCrouch || wheelSwapHands || wheelViewToggle || wheelHotbarShift
 				|| WheelInput.throttle > PEDAL_PWM_LOW || WheelInput.brake > PEDAL_PWM_LOW
 				|| Math.abs(WheelInput.steering) > STEER_DEADZONE);
 		if (wheelActive) {
@@ -157,6 +181,7 @@ public class WheelDrivingControl {
 			setMerged(client, client.options.keyJump, wheelJump);
 			setMerged(client, client.options.keyAttack, wheelAttack);
 			setMerged(client, client.options.keyUse, wheelUse);
+			setMerged(client, client.options.keyShift, wheelCrouch);
 		} else if (wasWheelReady) {
 			// Nothing clears KeyMapping.isDown on its own, so a key this class was
 			// holding on the wheel's behalf stays held the moment the block above
@@ -172,6 +197,7 @@ public class WheelDrivingControl {
 			setMerged(client, client.options.keyJump, false);
 			setMerged(client, client.options.keyAttack, false);
 			setMerged(client, client.options.keyUse, false);
+			setMerged(client, client.options.keyShift, false);
 		}
 		wasWheelReady = wheelReady;
 
@@ -179,6 +205,32 @@ public class WheelDrivingControl {
 			KeyMapping.click(KeyBindingHelper.getBoundKeyOf(client.options.keyAttack));
 		}
 		prevWheelAttack = wheelAttack;
+
+		// Swap-hands and view-toggle just proxy vanilla's own click-counted
+		// keybinds (F5/F, whichever the player has them bound to) rather than
+		// reimplementing perspective-cycling or offhand-swap logic ourselves -
+		// same click() trick as keyAttack above.
+		if (wheelSwapHands && !prevWheelSwapHands) {
+			KeyMapping.click(KeyBindingHelper.getBoundKeyOf(client.options.keySwapOffhand));
+		}
+		prevWheelSwapHands = wheelSwapHands;
+
+		if (wheelViewToggle && !prevWheelViewToggle) {
+			KeyMapping.click(KeyBindingHelper.getBoundKeyOf(client.options.keyTogglePerspective));
+		}
+		prevWheelViewToggle = wheelViewToggle;
+
+		// No vanilla keybind cycles the hotbar by one slot, so this sets the
+		// selected slot directly - MultiPlayerGameMode.tick() already watches
+		// Inventory.getSelectedSlot() every tick and sends
+		// ServerboundSetCarriedItemPacket on its own whenever it changes,
+		// exactly as it does for a number-key press, so no packet is sent
+		// here.
+		if (wheelHotbarShift && !prevWheelHotbarShift) {
+			Inventory inventory = client.player.getInventory();
+			inventory.setSelectedSlot((inventory.getSelectedSlot() + 1) % Inventory.SELECTION_SIZE);
+		}
+		prevWheelHotbarShift = wheelHotbarShift;
 
 		// The PWM throttle tap pattern looks exactly like rapid double-tapping
 		// W, which vanilla reads as "start sprinting" - so while the pedal is
