@@ -218,9 +218,9 @@ public final class SdlForceFeedback {
 
 		// DirectInput이 포커스 변화 등으로 이펙트 재생을 조용히 멈출 수 있는데
 		// UpdateEffect는 파라미터만 갱신할 뿐 재생 여부를 확인하지 않으므로
-		// 재생 중이 아닐 때만 다시 Run 해서 스스로 복구되게 한다
+		// 재생 중이 아닐 때만 다시 Run 해서 스스로 복구되게 한다.
 		int status = SdlHaptic.SDL_HapticGetEffectStatus(h.haptic, h.effectId);
-		if (status != 1) {
+		if (status == 0) {
 			if (SdlHaptic.SDL_HapticRunEffect(h.haptic, h.effectId, 1) != 0) {
 				captureError();
 				return -1;

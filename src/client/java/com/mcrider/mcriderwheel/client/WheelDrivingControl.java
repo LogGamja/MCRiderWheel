@@ -67,11 +67,13 @@ public class WheelDrivingControl {
 
 	public static void tick(Minecraft client) {
 		// armedAxisBindings는 InputBinding 인스턴스로 키를 잡으므로, 재보정으로
-		// 새 인스턴스가 생기면 옛 것들이 계속 쌓이지 않도록 GUID가 바뀔 때마다 비운다
-		String currentGuid = WheelInput.activeGuid;
-		if (!java.util.Objects.equals(currentGuid, lastArmedGuid)) {
+		// 새 인스턴스가 생기면 옛 것들이 계속 쌓이지 않도록 비운다. GUID가 아니라
+		// activeProfile 자체의 동일성으로 비교한다 - 같은 휠을 재보정하면 GUID는
+		// 그대로인 채 InputBinding 인스턴스만 새로 생기므로, GUID 비교로는 이 경우를 못 잡는다
+		WheelProfile currentProfile = WheelInput.activeProfile;
+		if (currentProfile != lastArmedProfile) {
 			armedAxisBindings.clear();
-			lastArmedGuid = currentGuid;
+			lastArmedProfile = currentProfile;
 		}
 
 		// 채팅/메뉴 조작 중이거나 창이 비활성 상태면 주입 키로 방해하지 않는다
@@ -275,5 +277,5 @@ public class WheelDrivingControl {
 	// InputBinding은 equals/hashCode가 없어서 참조 동일성으로 키를 잡는다
 	private static final java.util.Set<InputBinding> armedAxisBindings =
 			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-	private static String lastArmedGuid;
+	private static WheelProfile lastArmedProfile;
 }

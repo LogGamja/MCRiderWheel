@@ -8,10 +8,10 @@ public class WheelProfile {
 	public float steerLeft;
 	public float steerCenter;
 	public float steerRight;
-	// 보정 중 측정한 물리적 끝단 값. 설정한 락을 넘어간 정도(오버트래블) 계산에 사용
+	// 보정 중 측정한 물리적 끝단 값
 	public float steerPhysicalLeft;
 	public float steerPhysicalRight;
-	// REF90 단계에서 구한 1도당 raw 축 단위. 소프트락 벽 폭을 각도 단위로 잡기 위함
+	// REF90 단계에서 구한 1도당 raw 축 단위. 락 범위를 각도 단위로 설정하기 위함
 	public float steerRawPerDegree;
 
 	public float steerSensitivityPercent = 100f;

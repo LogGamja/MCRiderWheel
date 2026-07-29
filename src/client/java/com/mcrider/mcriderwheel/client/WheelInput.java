@@ -12,8 +12,6 @@ public class WheelInput {
 	public static float steering; // -1 (좌) .. 1 (우)
 	public static float throttle; // 0 .. 1
 	public static float brake;    // 0 .. 1
-	// 0 = 설정된 락 범위 이내, 1 = 물리적 끝단. 락이 물리 범위보다 좁을 때만 0보다 커진다
-	public static float steerOverTravel;
 
 	// 일부 페달은 재연결 직후 한 번 움직이기 전까지 어중간한 raw 값을 보고하는데
 	// 그 값이 released 쪽 극단이면 정규화 시 절반 스로틀로 읽혀서 문제가 된다
@@ -101,7 +99,6 @@ public class WheelInput {
 			activeProfile = profile;
 			activeGuid = guid;
 			steering = mapSteer(profile);
-			steerOverTravel = computeOverTravel(profile);
 			throttle = mapPedal(profile.throttleAxis, profile.throttleReleased, profile.throttlePressed, throttleArming);
 			brake = mapPedal(profile.brakeAxis, profile.brakeReleased, profile.brakePressed, brakeArming);
 			break;
@@ -116,7 +113,6 @@ public class WheelInput {
 			steering = 0f;
 			throttle = 0f;
 			brake = 0f;
-			steerOverTravel = 0f;
 			throttleArming.reset();
 			brakeArming.reset();
 			armedForGuid = null;
@@ -150,33 +146,6 @@ public class WheelInput {
 	// 비대칭 보정에서 mapSteer() 출력이 불연속으로 튈 수 있었다)
 	private static boolean isTowardRight(float v, WheelProfile p) {
 		return (v - p.steerCenter) * (p.steerRight - p.steerCenter) >= 0f;
-	}
-
-	// 소프트락 벽은 설정된 락 이후 이 각도만큼에서 최대 강도에 도달한다
-	// (남은 물리 범위 전체에 걸쳐 서서히 세지는 게 아니라 락 지점에서 바로 세져야 벽처럼 느껴진다)
-	private static final float WALL_WIDTH_DEG = 8f;
-	private static final float DEFAULT_WALL_WIDTH_RAW = 0.05f; // steerRawPerDegree를 모를 때 폴백
-
-	private static float computeOverTravel(WheelProfile p) {
-		if (p.steerAxis < 0 || p.steerAxis >= SdlJoystickReader.axisCount()) return 0f;
-		float v = SdlJoystickReader.axisValue(p.steerAxis);
-		float c = p.steerCenter;
-		float lockRaw;
-		float physRaw;
-		if (isTowardRight(v, p)) {
-			lockRaw = Math.abs(p.steerRight - c);
-			physRaw = Math.abs(p.steerPhysicalRight - c);
-		} else {
-			lockRaw = Math.abs(p.steerLeft - c);
-			physRaw = Math.abs(p.steerPhysicalLeft - c);
-		}
-		float travel = Math.abs(v - c);
-		float overRange = physRaw - lockRaw;
-		if (overRange < 1e-4f) return 0f; // 설정된 락이 이미 물리적 한계라 더 돌 여지가 없음
-
-		float wallWidth = p.steerRawPerDegree > 1e-6f ? WALL_WIDTH_DEG * p.steerRawPerDegree : DEFAULT_WALL_WIDTH_RAW;
-		wallWidth = Math.min(wallWidth, overRange);
-		return clamp((travel - lockRaw) / wallWidth, 0f, 1f);
 	}
 
 	private static float mapPedal(int axis, float released, float pressed, PedalArming arming) {

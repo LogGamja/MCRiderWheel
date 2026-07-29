@@ -96,7 +96,7 @@ public class WheelConfig {
 
 	public static void save(WheelProfile profile) {
 		ensureLoaded();
-		profiles.put(normalize(profile.guid), profile);
+		profiles.put(normalize(profile.guid), profile.copy());
 		writeToDisk();
 	}
 

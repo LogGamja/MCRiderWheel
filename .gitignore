@@ -32,10 +32,6 @@ bin/
 
 run/
 
-# native build toolchain (vendored MinGW-w64 + SDL2, ~76MB of binaries)
-
-native/toolchain/
-
 # java
 
 hs_err_*.log

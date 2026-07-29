@@ -989,6 +989,11 @@ public class WheelCalibrationScreen extends Screen {
 	public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
 		super.render(g, mouseX, mouseY, partialTick);
 
+		if (autoTriggered && !reachedDone && step != Step.DONE) {
+			g.drawCenteredString(font, Component.literal("나가면 다시 묻지 않습니다. 보정은 ESC 메뉴에서 다시 할 수 있습니다."),
+					width / 2, height / 2 - 95, 0xFFAA55);
+		}
+
 		g.drawCenteredString(font, title, width / 2, height / 2 - 80, 0xFFFFFF);
 
 		String[] promptLines = promptFor(step).split("\n");
@@ -1097,7 +1102,7 @@ public class WheelCalibrationScreen extends Screen {
 			case BRAKE_UP -> "브레이크 페달에서 발을 떼고 [다음]을 누르세요";
 			case BRAKE_DOWN -> "브레이크 페달을 끝까지 밟은 채로 [다음]을 누르세요";
 
-			case BUTTON_NOISE_SAMPLE -> "아무것도 만지지 말고 잠시 기다려주세요\n(자주 흔들리는 아날로그/버튼을 미리 걸러내는 중입니다)";
+			case BUTTON_NOISE_SAMPLE -> "자주 흔들리는 아날로그/버튼을 미리 걸러내는 중입니다\n아무것도 입력하지 말고 잠시 기다려주세요";
 
 			case GEAR_DOWN_BUTTON -> "기어 다운으로 쓸 버튼을 누르세요\n플레이어의 왼쪽 이동에 매핑됩니다";
 			case GEAR_UP_BUTTON -> "기어 업으로 쓸 버튼을 누르세요\n플레이어의 오른쪽 이동에 매핑됩니다";

@@ -10,14 +10,10 @@ import net.minecraft.client.Minecraft;
 
 // 휠이 중앙에서 멀어질수록 세게 되돌아오는 센터링 힘을 낸다.
 public final class WheelForceFeedback {
-	// 락 범위 안에서의 센터링 강도. 1 미만이어야 소프트락 벽이 더할 여지가 남는다
+	// 락 범위 안에서의 센터링 강도
 	private static final float STRENGTH = 0.5f;
 	// 이동 방향과 MCRider 방향 표시 엔티티가 어긋날 때 추가되는 저항
 	private static final float EXTRA_RESISTANCE_BOOST = 0.2f;
-	// FFB 강도 100%를 넘으면 순수 센터링만으로 출력 상한에 도달해버려서 벽이
-	// 더할 게 없어진다. 이걸 막기 위해 순수 센터링이 쓸 수 있는 몫을 이 비율로 제한한다
-	// (100% 이하에서는 원래도 이 값을 안 넘어서 영향 없음)
-	private static final float CENTER_MAGNITUDE_BUDGET = 0.85f;
 
 	private static final int PULSE_PERIOD_MS = 40; // 약 25Hz 진동, 장치 자체가 렌더링
 
@@ -302,33 +298,22 @@ public final class WheelForceFeedback {
 		float magnitude;
 		float direction;
 		if (tiresBrokenLoose) {
-			// 실제로 미끄러지면 자기 정렬 토크가 거의 없으므로 센터링은 빼고
-			// 소프트락 벽(기계적 끝단이라 그립과 무관)과 진동만 남긴다
-			float wallMagnitude = Math.min(1f, WheelInput.steerOverTravel * strengthMultiplier());
-			float wallSigned = steering >= 0 ? wallMagnitude : -wallMagnitude;
-
+			// 실제로 미끄러지면 자기 정렬 토크가 거의 없으므로 센터링 없이 진동만 남긴다
 			float vibMagnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
 			vibrationPhaseTicks++;
 			boolean phaseHigh = (vibrationPhaseTicks / VIBRATION_HALF_PERIOD_TICKS) % 2 == 0;
 			float vibSigned = phaseHigh ? vibMagnitude : -vibMagnitude;
-			float netSigned = Math.max(-1f, Math.min(1f, wallSigned + vibSigned));
-			magnitude = Math.abs(netSigned);
-			direction = netSigned >= 0 ? 0f : 180f;
+			magnitude = Math.abs(vibSigned);
+			direction = vibSigned >= 0 ? 0f : 180f;
 		} else {
-			// 아래는 처음부터 최종(배율 적용 후) 출력 공간에서 계산하고 ceiling으로 제한한다
 			float mult = strengthMultiplier();
-			float ceiling = Math.min(1f, mult);
 
 			// 센터링을 부호 있는 값으로 먼저 구해서 진동의 부호 있는 스윙과 합산할 수 있게 한다
-			float centerMagnitude = Math.min(ceiling * CENTER_MAGNITUDE_BUDGET, Math.abs(steering) * STRENGTH * mult);
-			// 소프트락: 설정된 락을 넘으면 이 설정의 ceiling까지 세게 밀어서 벽처럼 느껴지게 한다
-			float overTravel = WheelInput.steerOverTravel;
-			if (overTravel > 0f) {
-				centerMagnitude = centerMagnitude + (ceiling - centerMagnitude) * overTravel;
-			}
+			float centerMagnitude = Math.min(1f, Math.abs(steering) * STRENGTH);
 			if (extraResistance) {
-				centerMagnitude = Math.min(ceiling, centerMagnitude + EXTRA_RESISTANCE_BOOST * mult);
+				centerMagnitude = Math.min(1f, centerMagnitude + EXTRA_RESISTANCE_BOOST);
 			}
+			centerMagnitude = Math.min(1f, centerMagnitude * mult);
 			float centerSigned = steering >= 0 ? centerMagnitude : -centerMagnitude;
 
 			if (gripVibrationMagnitude > 0f) {
