@@ -840,13 +840,14 @@ public class WheelCalibrationScreen extends Screen {
 		if (profile == null) return;
 
 		int steerAxis = bestAxis(leftSnap, rightSnap);
-		if (steerAxis < 0) {
+		boolean missingCenterData = centerSnap == null || steerAxis < 0 || steerAxis >= centerSnap.length;
+		if (missingCenterData) {
 			// 기존에 잘 작동하던 조향 설정이 있으면 그대로 두고, 없으면 계속 조향 불가능 상태로 둔다
 			boolean keptWorkingCalibration = profile.isDriveable();
 			steerCalibrationWarning = keptWorkingCalibration
 					? "조향축 인식 실패 - 기존 조향 설정을 유지합니다"
 					: "조향축 인식 실패 - 이 휠은 아직 조향할 수 없습니다. 휠 보정을 다시 실행하세요";
-			WheelClientMain.LOGGER.warn("Steering calibration failed for {} (wheel not turned far enough between LEFT/RIGHT) - {}",
+			WheelClientMain.LOGGER.warn("Steering calibration failed for {} (wheel not turned far enough between LEFT/RIGHT, or center snapshot missing) - {}",
 					profile.name, keptWorkingCalibration ? "keeping previously saved steering" : "device still has no usable steering");
 			return;
 		}
@@ -861,15 +862,7 @@ public class WheelCalibrationScreen extends Screen {
 	// REF90에서 측정한 정확히 90도 회전 값으로 raw 단위당 각도를 구하고, 그걸로
 	// 락 범위 선택 값을 raw 축 값으로 환산한다 (물리 범위를 넘어서는 못 잡는다)
 	private void applySteerRange(int steerAxis, WheelProfile profile) {
-		// centerSnap/ref90Snap은 각자 독립적으로 찍힌 스냅샷이라, 그 단계 때 장치가
-		// 아직 연결 안 됐으면 leftSnap/rightSnap보다 짧을 수 있다
 		if (steerAxis < 0 || centerSnap == null || steerAxis >= centerSnap.length) {
-			profile.steerCenter = 0f;
-			profile.steerLeft = -1f;
-			profile.steerRight = 1f;
-			profile.steerPhysicalLeft = -1f;
-			profile.steerPhysicalRight = 1f;
-			profile.steerRawPerDegree = 0f;
 			return;
 		}
 

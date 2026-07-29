@@ -191,16 +191,18 @@ public class WheelSettingsScreen extends Screen {
 	}
 
 	private static void persistActiveProfile() {
-		profileDirty = false;
+		dirtyProfile = null;
 		WheelProfile profile = WheelInput.activeProfile;
 		if (profile != null) WheelConfig.save(profile);
 	}
 
-	// 키보드로 슬라이더를 조작할 때 표시만 해두고, 저장은 나중에 몰아서 한다
-	private static boolean profileDirty;
+	private static WheelProfile dirtyProfile;
 
 	private static void flushProfileIfDirty() {
-		if (profileDirty) persistActiveProfile();
+		if (dirtyProfile != null) {
+			WheelConfig.save(dirtyProfile);
+			dirtyProfile = null;
+		}
 	}
 
 	@Override
@@ -341,11 +343,10 @@ public class WheelSettingsScreen extends Screen {
 			persistActiveProfile();
 		}
 
-		// 키보드 조작은 onRelease()를 안 거치므로 dirty로 표시만 하고 나중에 몰아서 저장한다
 		@Override
 		public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
 			boolean handled = super.keyPressed(keyCode, scanCode, modifiers);
-			if (handled) profileDirty = true;
+			if (handled) dirtyProfile = WheelInput.activeProfile;
 			return handled;
 		}
 
