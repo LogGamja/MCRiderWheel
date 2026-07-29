@@ -45,6 +45,22 @@ public final class SdlForceFeedback {
 		SDL_Haptic haptic;
 		int effectId = -1;
 		int pulseEffectId = -1;
+		// Reused across calls instead of `new`-ing a fresh Structure/Union each
+		// time - mcrider_ffb_set_force() is called every client tick for as
+		// long as FFB is enabled (so 20/sec for the length of a whole race),
+		// making it by far the hottest JNA-marshaled native-memory allocation
+		// site in the mod. Mutating the same instances' fields in place is
+		// both the standard JNA-reuse idiom and removes that allocation churn
+		// as a variable when chasing the kind of delayed native-heap-
+		// corruption crash (a VM-internal frame, not a crash right at an SDL
+		// call site) this class's own comments have already run into more
+		// than once on this exact SDL2/DirectInput stack.
+		SDL_HapticDirection forceDirection;
+		SDL_HapticConstant forceConstant;
+		SDL_HapticEffect forceEffect;
+		SDL_HapticDirection pulseDirectionObj;
+		SDL_HapticPeriodic pulsePeriodicObj;
+		SDL_HapticEffect pulseEffectObj;
 	}
 
 	private static final Handle[] handles = new Handle[MAX_HANDLES];
@@ -187,34 +203,44 @@ public final class SdlForceFeedback {
 		// confirmed working on single-axis wheels.
 		int sign = (directionDeg >= 90.0f && directionDeg < 270.0f) ? -1 : 1;
 
-		SDL_HapticDirection direction = new SDL_HapticDirection();
-		direction.type = (byte) SDL_HapticDirectionEncoding.SDL_HAPTIC_CARTESIAN;
-		direction.dir[0] = 1;
+		// Built once per handle and reused for every subsequent call (see the
+		// Handle field's own comment) instead of `new`-ing a fresh
+		// Structure/Union on every tick - only the one field that actually
+		// changes per-tick (constant.level) is written on the reused instance.
+		if (h.forceDirection == null) {
+			h.forceDirection = new SDL_HapticDirection();
+			h.forceDirection.type = (byte) SDL_HapticDirectionEncoding.SDL_HAPTIC_CARTESIAN;
+			h.forceDirection.dir[0] = 1;
+		}
 
-		SDL_HapticConstant constant = new SDL_HapticConstant();
-		// The union's own setType() below only selects which member JNA
-		// marshals - it does NOT set that member's own leading `type` field,
-		// which is what actually lands at the shared union memory offset
-		// SDL reads back to validate the effect. Leaving this unset (0)
-		// made SDL_HapticNewEffect's JNA read-back see type=0 and throw
-		// "Invalid haptic effect type: 0" - confirmed against real hardware.
-		constant.type = (short) SDL_HapticEffectType.SDL_HAPTIC_CONSTANT;
-		constant.direction = direction;
-		constant.length = SdlHapticConst.SDL_HAPTIC_INFINITY;
-		constant.level = (short) (sign * magnitude * 32767.0f);
+		if (h.forceConstant == null) {
+			h.forceConstant = new SDL_HapticConstant();
+			// The union's own setType() below only selects which member JNA
+			// marshals - it does NOT set that member's own leading `type` field,
+			// which is what actually lands at the shared union memory offset
+			// SDL reads back to validate the effect. Leaving this unset (0)
+			// made SDL_HapticNewEffect's JNA read-back see type=0 and throw
+			// "Invalid haptic effect type: 0" - confirmed against real hardware.
+			h.forceConstant.type = (short) SDL_HapticEffectType.SDL_HAPTIC_CONSTANT;
+			h.forceConstant.direction = h.forceDirection;
+			h.forceConstant.length = SdlHapticConst.SDL_HAPTIC_INFINITY;
+		}
+		h.forceConstant.level = (short) (sign * magnitude * 32767.0f);
 
-		SDL_HapticEffect effect = new SDL_HapticEffect();
-		effect.constant = constant;
-		effect.setType(SDL_HapticEffectType.SDL_HAPTIC_CONSTANT);
+		if (h.forceEffect == null) {
+			h.forceEffect = new SDL_HapticEffect();
+			h.forceEffect.constant = h.forceConstant;
+			h.forceEffect.setType(SDL_HapticEffectType.SDL_HAPTIC_CONSTANT);
+		}
 
 		if (h.effectId < 0) {
-			h.effectId = SdlHaptic.SDL_HapticNewEffect(h.haptic, effect);
+			h.effectId = SdlHaptic.SDL_HapticNewEffect(h.haptic, h.forceEffect);
 			if (h.effectId < 0) {
 				captureError();
 				return -1;
 			}
 		} else {
-			if (SdlHaptic.SDL_HapticUpdateEffect(h.haptic, h.effectId, effect) != 0) {
+			if (SdlHaptic.SDL_HapticUpdateEffect(h.haptic, h.effectId, h.forceEffect) != 0) {
 				captureError();
 				return -1;
 			}
@@ -260,27 +286,39 @@ public final class SdlForceFeedback {
 			h.pulseEffectId = -1;
 		}
 
-		SDL_HapticDirection direction = new SDL_HapticDirection();
-		direction.type = (byte) SDL_HapticDirectionEncoding.SDL_HAPTIC_CARTESIAN;
-		direction.dir[0] = startSign;
+		// Reused across calls like mcrider_ffb_set_force's own instances (see
+		// the Handle field's comment) - the native effect itself still gets
+		// destroyed/recreated every call above (SDL has no "update" for a
+		// one-shot periodic effect's timing fields the way it does for the
+		// constant effect), but the Java-side Structure/Union objects handed
+		// to that create call don't need to be fresh too.
+		if (h.pulseDirectionObj == null) {
+			h.pulseDirectionObj = new SDL_HapticDirection();
+			h.pulseDirectionObj.type = (byte) SDL_HapticDirectionEncoding.SDL_HAPTIC_CARTESIAN;
+		}
+		h.pulseDirectionObj.dir[0] = startSign;
 
-		SDL_HapticPeriodic periodic = new SDL_HapticPeriodic();
-		// See mcrider_ffb_set_force's comment - the member struct's own
-		// `type` field has to be set explicitly, effect.setType() alone
-		// isn't enough.
-		periodic.type = (short) SDL_HapticEffectType.SDL_HAPTIC_SINE;
-		periodic.direction = direction;
-		periodic.period = (short) periodMs;
-		periodic.magnitude = (short) (magnitude * 32767.0f);
-		periodic.length = durationMs;
-		periodic.fadeLength = (short) (durationMs / 2);
-		periodic.fadeLevel = 0;
+		if (h.pulsePeriodicObj == null) {
+			h.pulsePeriodicObj = new SDL_HapticPeriodic();
+			// See mcrider_ffb_set_force's comment - the member struct's own
+			// `type` field has to be set explicitly, effect.setType() alone
+			// isn't enough.
+			h.pulsePeriodicObj.type = (short) SDL_HapticEffectType.SDL_HAPTIC_SINE;
+			h.pulsePeriodicObj.direction = h.pulseDirectionObj;
+			h.pulsePeriodicObj.fadeLevel = 0;
+		}
+		h.pulsePeriodicObj.period = (short) periodMs;
+		h.pulsePeriodicObj.magnitude = (short) (magnitude * 32767.0f);
+		h.pulsePeriodicObj.length = durationMs;
+		h.pulsePeriodicObj.fadeLength = (short) (durationMs / 2);
 
-		SDL_HapticEffect effect = new SDL_HapticEffect();
-		effect.periodic = periodic;
-		effect.setType(SDL_HapticEffectType.SDL_HAPTIC_SINE);
+		if (h.pulseEffectObj == null) {
+			h.pulseEffectObj = new SDL_HapticEffect();
+			h.pulseEffectObj.periodic = h.pulsePeriodicObj;
+			h.pulseEffectObj.setType(SDL_HapticEffectType.SDL_HAPTIC_SINE);
+		}
 
-		h.pulseEffectId = SdlHaptic.SDL_HapticNewEffect(h.haptic, effect);
+		h.pulseEffectId = SdlHaptic.SDL_HapticNewEffect(h.haptic, h.pulseEffectObj);
 		if (h.pulseEffectId < 0) {
 			captureError();
 			return -1;
