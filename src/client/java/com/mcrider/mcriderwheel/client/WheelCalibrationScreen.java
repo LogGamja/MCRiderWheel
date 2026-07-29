@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
-import com.mcrider.wheeltest.client.sdl.SdlJoystickReader;
+import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
@@ -915,7 +915,7 @@ public class WheelCalibrationScreen extends Screen {
 		profile.steerAxis = steerAxis;
 		applySteerRange(steerAxis, profile);
 
-		WheelTestClient.LOGGER.info("Calibrated steering for {}: axis={}", profile.name, steerAxis);
+		WheelClientMain.LOGGER.info("Calibrated steering for {}: axis={}", profile.name, steerAxis);
 	}
 
 	/**
@@ -967,7 +967,7 @@ public class WheelCalibrationScreen extends Screen {
 		profile.steerLeft = centerRaw + leftSign * Math.min(desiredRangeRaw, leftFullRangeRaw);
 		profile.steerRight = centerRaw + rightSign * Math.min(desiredRangeRaw, rightFullRangeRaw);
 
-		WheelTestClient.LOGGER.info("Steering lock set to {} degrees (raw/deg={}, measured full lock left={} right={})",
+		WheelClientMain.LOGGER.info("Steering lock set to {} degrees (raw/deg={}, measured full lock left={} right={})",
 				desiredLockDeg, rawPerDegree, leftFullRangeRaw / rawPerDegree, rightFullRangeRaw / rawPerDegree);
 	}
 
@@ -1000,7 +1000,7 @@ public class WheelCalibrationScreen extends Screen {
 			profile.brakePressed = brakeDownSnap[brakeAxis];
 		}
 
-		WheelTestClient.LOGGER.info("Calibrated pedals for {}: throttleAxis={} brakeAxis={}",
+		WheelClientMain.LOGGER.info("Calibrated pedals for {}: throttleAxis={} brakeAxis={}",
 				profile.name, throttleAxis, brakeAxis);
 	}
 
@@ -1017,13 +1017,13 @@ public class WheelCalibrationScreen extends Screen {
 		profile.lookUp = lookUp;
 		profile.lookDown = lookDown;
 
-		WheelTestClient.LOGGER.info("Calibrated buttons for {}", profile.name);
+		WheelClientMain.LOGGER.info("Calibrated buttons for {}", profile.name);
 	}
 
 	private void completeAndSave() {
 		if (profile == null) return;
 		WheelConfig.save(profile);
-		WheelTestClient.LOGGER.info("Saved wheel profile for {}", profile.name);
+		WheelClientMain.LOGGER.info("Saved wheel profile for {}", profile.name);
 	}
 
 	private int bestAxis(float[] a, float[] b, int... exclude) {

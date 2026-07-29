@@ -1,4 +1,4 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
 public class WheelProfile {
 	public String guid;

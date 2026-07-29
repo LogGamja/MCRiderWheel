@@ -1,11 +1,11 @@
-package com.mcrider.wheeltest.client.ffb;
+package com.mcrider.mcriderwheel.client.ffb;
 
-import com.mcrider.wheeltest.client.WheelCalibrationScreen;
-import com.mcrider.wheeltest.client.WheelInput;
-import com.mcrider.wheeltest.client.WheelProfile;
-import com.mcrider.wheeltest.client.WheelTestClient;
-import com.mcrider.wheeltest.client.sdl.SdlForceFeedback;
-import com.mcrider.wheeltest.client.sdl.SdlJoystickReader;
+import com.mcrider.mcriderwheel.client.WheelCalibrationScreen;
+import com.mcrider.mcriderwheel.client.WheelInput;
+import com.mcrider.mcriderwheel.client.WheelProfile;
+import com.mcrider.mcriderwheel.client.WheelClientMain;
+import com.mcrider.mcriderwheel.client.sdl.SdlForceFeedback;
+import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.minecraft.client.Minecraft;
 
 /**
@@ -113,7 +113,7 @@ public final class WheelForceFeedback {
 		try {
 			sdlAvailable = SdlForceFeedback.mcrider_ffb_init() == 0;
 		} catch (Throwable t) {
-			WheelTestClient.LOGGER.error("[FFB] failed to load/initialize SDL force feedback", t);
+			WheelClientMain.LOGGER.error("[FFB] failed to load/initialize SDL force feedback", t);
 			sdlAvailable = false;
 		}
 	}
@@ -143,10 +143,10 @@ public final class WheelForceFeedback {
 				index = findSdlIndexForName(profile.name);
 			}
 			if (index < 0) {
-				WheelTestClient.LOGGER.warn("[FFB] could not match device '{}' (guid {}) to any SDL haptic device", profile.name, profile.guid);
+				WheelClientMain.LOGGER.warn("[FFB] could not match device '{}' (guid {}) to any SDL haptic device", profile.name, profile.guid);
 				int count = SdlForceFeedback.mcrider_ffb_device_count();
 				for (int i = 0; i < count; i++) {
-					WheelTestClient.LOGGER.warn("[FFB]   SDL device {}: name='{}' guid={}", i,
+					WheelClientMain.LOGGER.warn("[FFB]   SDL device {}: name='{}' guid={}", i,
 							SdlForceFeedback.mcrider_ffb_device_name(i), SdlForceFeedback.mcrider_ffb_device_guid(i));
 				}
 				failedGuid = profile.guid;
@@ -155,7 +155,7 @@ public final class WheelForceFeedback {
 
 			handle = SdlForceFeedback.mcrider_ffb_open(index);
 			if (handle < 0) {
-				WheelTestClient.LOGGER.warn("[FFB] failed to open device for force feedback: {}", SdlForceFeedback.mcrider_ffb_last_error());
+				WheelClientMain.LOGGER.warn("[FFB] failed to open device for force feedback: {}", SdlForceFeedback.mcrider_ffb_last_error());
 				failedGuid = profile.guid;
 				return;
 			}
@@ -165,7 +165,7 @@ public final class WheelForceFeedback {
 			failedGuid = null;
 			int caps = SdlForceFeedback.mcrider_ffb_query(handle);
 			int axes = SdlForceFeedback.mcrider_ffb_num_axes(handle);
-			WheelTestClient.LOGGER.info("[FFB] enabled on device index {} (handle {}) caps=0x{} axes={} (SDL_HAPTIC_CONSTANT bit={})",
+			WheelClientMain.LOGGER.info("[FFB] enabled on device index {} (handle {}) caps=0x{} axes={} (SDL_HAPTIC_CONSTANT bit={})",
 					index, handle, Integer.toHexString(caps), axes, (caps & 0x0001) != 0);
 			forceLoggedOnce = false;
 			restartTicks = 0;
@@ -183,7 +183,7 @@ public final class WheelForceFeedback {
 	 */
 	private static void disable(String reason) {
 		if (enabled) {
-			WheelTestClient.LOGGER.info("[FFB] disabling force feedback ({})", reason);
+			WheelClientMain.LOGGER.info("[FFB] disabling force feedback ({})", reason);
 		}
 		enabled = false;
 		enabledGuid = null;
@@ -202,7 +202,7 @@ public final class WheelForceFeedback {
 				SdlForceFeedback.mcrider_ffb_close(handle);
 			} catch (Throwable t) {
 				nativeFaulted = true;
-				WheelTestClient.LOGGER.error("[FFB] native call 'disable' crashed, disabling force feedback for the rest of this session", t);
+				WheelClientMain.LOGGER.error("[FFB] native call 'disable' crashed, disabling force feedback for the rest of this session", t);
 			}
 		}
 		handle = -1;
@@ -278,7 +278,7 @@ public final class WheelForceFeedback {
 		try {
 			int result = SdlForceFeedback.mcrider_ffb_pulse(handle, scaledMagnitude, PULSE_PERIOD_MS, (int) durationMs, startSign);
 			if (result != 0) {
-				WheelTestClient.LOGGER.warn("[FFB] pulse failed: {}", SdlForceFeedback.mcrider_ffb_last_error());
+				WheelClientMain.LOGGER.warn("[FFB] pulse failed: {}", SdlForceFeedback.mcrider_ffb_last_error());
 			}
 		} catch (Throwable t) {
 			onNativeFault("pulse", t);
@@ -302,7 +302,7 @@ public final class WheelForceFeedback {
 
 	private static void onNativeFault(String call, Throwable t) {
 		nativeFaulted = true;
-		WheelTestClient.LOGGER.error("[FFB] native call '{}' crashed, disabling force feedback for the rest of this session", call, t);
+		WheelClientMain.LOGGER.error("[FFB] native call '{}' crashed, disabling force feedback for the rest of this session", call, t);
 		disable("native fault in " + call);
 	}
 
@@ -478,11 +478,11 @@ public final class WheelForceFeedback {
 				// close+reopen that alt-tab-recovery already relies on -
 				// means a fresh reconnect attempt happens automatically
 				// instead of requiring the player to alt-tab to notice.
-				WheelTestClient.LOGGER.warn("[FFB] set_force failed: {} - closing device so it reopens fresh", SdlForceFeedback.mcrider_ffb_last_error());
+				WheelClientMain.LOGGER.warn("[FFB] set_force failed: {} - closing device so it reopens fresh", SdlForceFeedback.mcrider_ffb_last_error());
 				disable("set_force failed");
 			} else if (!forceLoggedOnce) {
 				forceLoggedOnce = true;
-				WheelTestClient.LOGGER.info("[FFB] set_force succeeded (magnitude={}, direction={})", magnitude, direction);
+				WheelClientMain.LOGGER.info("[FFB] set_force succeeded (magnitude={}, direction={})", magnitude, direction);
 			}
 		} catch (Throwable t) {
 			onNativeFault("set_force", t);
@@ -517,7 +517,7 @@ public final class WheelForceFeedback {
 
 	private static void periodicRestart() {
 		if (SdlForceFeedback.mcrider_ffb_restart_effect(handle) != 0) {
-			WheelTestClient.LOGGER.warn("[FFB] periodic effect restart failed: {} - falling back to a full reopen", SdlForceFeedback.mcrider_ffb_last_error());
+			WheelClientMain.LOGGER.warn("[FFB] periodic effect restart failed: {} - falling back to a full reopen", SdlForceFeedback.mcrider_ffb_last_error());
 			disable("periodic effect restart failed");
 		}
 	}
@@ -528,7 +528,7 @@ public final class WheelForceFeedback {
 			try {
 				SdlForceFeedback.mcrider_ffb_quit();
 			} catch (Throwable t) {
-				WheelTestClient.LOGGER.error("[FFB] native call 'quit' crashed during shutdown", t);
+				WheelClientMain.LOGGER.error("[FFB] native call 'quit' crashed during shutdown", t);
 			}
 		}
 	}

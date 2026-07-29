@@ -1,7 +1,7 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
-import com.mcrider.wheeltest.client.ffb.WheelForceFeedback;
-import com.mcrider.wheeltest.client.sdl.SdlJoystickReader;
+import com.mcrider.mcriderwheel.client.ffb.WheelForceFeedback;
+import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -31,8 +31,8 @@ import java.util.Set;
  * sound that's server-broadcast but too quiet/far to actually be heard
  * locally never reaches it.
  */
-public class WheelTestClient implements ClientModInitializer {
-	public static final Logger LOGGER = LoggerFactory.getLogger("mcrider-wheel-test");
+public class WheelClientMain implements ClientModInitializer {
+	public static final Logger LOGGER = LoggerFactory.getLogger("mcriderwheel");
 
 	// Keyed by GUID rather than SDL's enumeration index - unlike GLFW's
 	// jid (stable per physical slot while connected), SDL's device index
@@ -146,7 +146,7 @@ public class WheelTestClient implements ClientModInitializer {
 			present.add(guid);
 			if (!connectedGuids.contains(guid)) {
 				String name = SdlJoystickReader.deviceName(i);
-				say(client, "[WheelTest] joystick connected: " + name + " (guid=" + guid + ")");
+				say(client, "[MCRiderWheel] joystick connected: " + name + " (guid=" + guid + ")");
 
 				WheelProfile profile = WheelConfig.get(guid);
 				if ((profile == null || !profile.isDriveable()) && !anyCalibratedJoystickPresent()) {
@@ -156,7 +156,7 @@ public class WheelTestClient implements ClientModInitializer {
 		}
 		for (String guid : connectedGuids) {
 			if (!present.contains(guid)) {
-				say(client, "[WheelTest] joystick disconnected (guid=" + guid + ")");
+				say(client, "[MCRiderWheel] joystick disconnected (guid=" + guid + ")");
 			}
 		}
 		connectedGuids.clear();

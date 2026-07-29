@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
-import com.mcrider.wheeltest.client.ffb.WheelForceFeedback;
+import com.mcrider.mcriderwheel.client.ffb.WheelForceFeedback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;

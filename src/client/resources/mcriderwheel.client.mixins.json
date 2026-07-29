@@ -1,6 +1,6 @@
 {
 	"required": true,
-	"package": "com.mcrider.wheeltest.client.mixin",
+	"package": "com.mcrider.mcriderwheel.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
 		"PauseScreenMixin",

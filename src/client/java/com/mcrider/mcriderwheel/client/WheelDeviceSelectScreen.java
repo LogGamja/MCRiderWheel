@@ -1,7 +1,7 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
-import com.mcrider.wheeltest.client.ffb.WheelForceFeedback;
-import com.mcrider.wheeltest.client.sdl.SdlJoystickReader;
+import com.mcrider.mcriderwheel.client.ffb.WheelForceFeedback;
+import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;

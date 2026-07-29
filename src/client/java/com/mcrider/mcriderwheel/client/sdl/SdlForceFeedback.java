@@ -1,4 +1,4 @@
-package com.mcrider.wheeltest.client.sdl;
+package com.mcrider.mcriderwheel.client.sdl;
 
 import io.github.libsdl4j.api.Sdl;
 import io.github.libsdl4j.api.SdlSubSystemConst;

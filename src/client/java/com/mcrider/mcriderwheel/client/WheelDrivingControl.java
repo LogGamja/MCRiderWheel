@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
-import com.mcrider.wheeltest.client.sdl.SdlJoystickReader;
+import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.KeyMapping;

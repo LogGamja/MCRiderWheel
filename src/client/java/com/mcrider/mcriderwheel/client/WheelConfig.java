@@ -1,4 +1,4 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -75,7 +75,7 @@ public class WheelConfig {
 				// throw JsonSyntaxException, which would otherwise propagate out
 				// of the client tick and crash the game instead of just losing
 				// the saved profiles.
-				WheelTestClient.LOGGER.warn("Failed to load wheel config", e);
+				WheelClientMain.LOGGER.warn("Failed to load wheel config", e);
 			}
 		}
 	}
@@ -115,7 +115,7 @@ public class WheelConfig {
 				GSON.toJson(root, w);
 			}
 		} catch (IOException e) {
-			WheelTestClient.LOGGER.warn("Failed to save wheel config", e);
+			WheelClientMain.LOGGER.warn("Failed to save wheel config", e);
 		}
 	}
 }

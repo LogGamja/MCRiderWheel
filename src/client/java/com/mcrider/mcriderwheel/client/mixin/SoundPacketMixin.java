@@ -1,7 +1,7 @@
-package com.mcrider.wheeltest.client.mixin;
+package com.mcrider.mcriderwheel.client.mixin;
 
-import com.mcrider.wheeltest.client.RiddenVehicle;
-import com.mcrider.wheeltest.client.ffb.WheelForceFeedback;
+import com.mcrider.mcriderwheel.client.RiddenVehicle;
+import com.mcrider.mcriderwheel.client.ffb.WheelForceFeedback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
@@ -28,12 +28,12 @@ public abstract class SoundPacketMixin {
 	private static final ResourceLocation ATTACK_DOOR_SOUND = ResourceLocation.withDefaultNamespace("entity.zombie.attack_wooden_door");
 
 	@Inject(method = "handleSoundEvent", at = @At("HEAD"))
-	private void mcriderWheelTest$onSoundEvent(ClientboundSoundPacket packet, CallbackInfo ci) {
+	private void mcriderWheel$onSoundEvent(ClientboundSoundPacket packet, CallbackInfo ci) {
 		handle(packet.getSound().value().location());
 	}
 
 	@Inject(method = "handleSoundEntityEvent", at = @At("HEAD"))
-	private void mcriderWheelTest$onSoundEntityEvent(ClientboundSoundEntityPacket packet, CallbackInfo ci) {
+	private void mcriderWheel$onSoundEntityEvent(ClientboundSoundEntityPacket packet, CallbackInfo ci) {
 		handle(packet.getSound().value().location());
 	}
 

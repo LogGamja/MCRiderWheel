@@ -1,4 +1,4 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
 /**
  * A single misc input captured during BUTTONS_ONLY calibration - a real SDL

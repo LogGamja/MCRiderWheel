@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client.sdl;
+package com.mcrider.mcriderwheel.client.sdl;
 
-import com.mcrider.wheeltest.client.WheelTestClient;
+import com.mcrider.mcriderwheel.client.WheelClientMain;
 import io.github.libsdl4j.api.Sdl;
 import io.github.libsdl4j.api.SdlSubSystemConst;
 import io.github.libsdl4j.api.error.SdlError;
@@ -58,7 +58,7 @@ public final class SdlJoystickReader {
 		if (Sdl.SDL_Init(SdlSubSystemConst.SDL_INIT_JOYSTICK) != 0) {
 			if (!sdlInitFailureLogged) {
 				sdlInitFailureLogged = true;
-				WheelTestClient.LOGGER.error("[Wheel] failed to initialize SDL joystick subsystem: {}", SdlError.SDL_GetError());
+				WheelClientMain.LOGGER.error("[Wheel] failed to initialize SDL joystick subsystem: {}", SdlError.SDL_GetError());
 			}
 			return false;
 		}

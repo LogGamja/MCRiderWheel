@@ -1,4 +1,4 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;

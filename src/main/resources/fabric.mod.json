@@ -1,25 +1,22 @@
 {
 	"schemaVersion": 1,
-	"id": "mcrider_wheel_test",
+	"id": "mcriderwheel",
 	"version": "${version}",
-	"name": "MCRider Wheel Test",
-	"description": "Racing wheel (e.g. Thrustmaster T500 RS) input recognition test for MCRider.",
+	"name": "MCRider Wheel",
+	"description": "Racing wheel mod for MCRider contents.",
 	"authors": [
 		"loggamja"
 	],
 	"license": "CC0-1.0",
 	"environment": "client",
 	"entrypoints": {
-		"main": [
-			"com.mcrider.wheeltest.WheelTestMod"
-		],
 		"client": [
-			"com.mcrider.wheeltest.client.WheelTestClient"
+          "com.mcrider.mcriderwheel.client.WheelClientMain"
 		]
 	},
 	"mixins": [
 		{
-			"config": "mcrider_wheel_test.client.mixins.json",
+			"config": "mcriderwheel.client.mixins.json",
 			"environment": "client"
 		}
 	],

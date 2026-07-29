@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client.mixin;
+package com.mcrider.mcriderwheel.client.mixin;
 
-import com.mcrider.wheeltest.client.WheelDrivingControl;
+import com.mcrider.mcriderwheel.client.WheelDrivingControl;
 import net.minecraft.client.player.LocalPlayer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -25,7 +25,7 @@ public abstract class LocalPlayerSprintMixin {
 	protected int sprintTriggerTime;
 
 	@Inject(method = "aiStep", at = @At("HEAD"))
-	private void mcriderWheelTest$suppressDoubleTapSprint(CallbackInfo ci) {
+	private void mcriderWheel$suppressDoubleTapSprint(CallbackInfo ci) {
 		if (WheelDrivingControl.isSuppressingAutoSprintTrigger()) {
 			this.sprintTriggerTime = 0;
 		}

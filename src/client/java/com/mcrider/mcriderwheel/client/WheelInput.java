@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client;
+package com.mcrider.mcriderwheel.client;
 
-import com.mcrider.wheeltest.client.sdl.SdlJoystickReader;
+import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.minecraft.client.Minecraft;
 
 /**

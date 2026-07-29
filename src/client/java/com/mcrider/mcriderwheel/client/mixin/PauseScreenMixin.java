@@ -1,6 +1,6 @@
-package com.mcrider.wheeltest.client.mixin;
+package com.mcrider.mcriderwheel.client.mixin;
 
-import com.mcrider.wheeltest.client.WheelSettingsScreen;
+import com.mcrider.mcriderwheel.client.WheelSettingsScreen;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -17,7 +17,7 @@ public abstract class PauseScreenMixin extends Screen {
 	}
 
 	@Inject(method = "init", at = @At("RETURN"))
-	private void mcriderWheelTest$addSettingsButton(CallbackInfo ci) {
+	private void mcriderWheel$addSettingsButton(CallbackInfo ci) {
 		// showsPauseMenu() is false for the bare "saving world"/loading variant of
 		// this screen, whose init() returns early without building any menu
 		// widgets - skip adding ours too, or it'd be the only thing on an
