@@ -8,24 +8,10 @@ import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 
-/**
- * MCRider's "engine 1006" kart doesn't expose grip through any MCRider API -
- * it piggybacks on the vehicle's vanilla ARMOR attribute, using named
- * AttributeModifiers on it as ad-hoc data fields ("data-engine-real" for the
- * engine id, "state-drift" as a 0/1 flag) rather than the attribute's own
- * value. The actual grip gauge is the player's own XP progress bar (0..100%).
- *
- * Reading the XP bar alone can't tell a real slide apart from ordinary grip:
- * when the tires actually break loose, engine 1006 resets the gauge down to
- * around 20%, which looks identical to "gripping fine at 20%". The
- * "state-drift" flag is what disambiguates the two - while it's set, this
- * always feeds the full-strength vibration magnitude regardless of what the
- * XP bar reads, and also reports the wheel as broken loose (see
- * setTiresBrokenLoose()) so WheelForceFeedback drops the centering pull out
- * from under that vibration instead of pulling against it - a real slide
- * gives no restoring torque back through the wheel. The soft-lock wall stays
- * though: it's a mechanical end-stop on the rig itself, not a grip effect.
- */
+// MCRider의 엔진 1006 카트는 전용 API가 없어서, 차량의 ARMOR 속성에 붙은
+// 이름 붙은 AttributeModifier("data-engine-real", "state-drift")를 데이터로 읽는다.
+// 그립 게이지는 플레이어의 XP 진행도이고, state-drift 플래그가 실제 슬립 여부를 알려준다
+// (슬립이 발생하면 XP가 20% 정도로 리셋되어 그냥 그립 중인 상태와 구분이 안 되기 때문)
 public final class TireGripFeedback {
 	private static final int GRIP_ENGINE_ID = 1006;
 	private static final float GRIP_RAMP_START = 0.25f;
@@ -40,9 +26,8 @@ public final class TireGripFeedback {
 			return;
 		}
 
-		// XP below stays read from client.player regardless of whose vehicle this
-		// is: the server mirrors whatever's being spectated onto the spectator's
-		// own XP bar, so client.player's is already the right gauge to read either way.
+		// 서버가 관전 대상의 XP를 관전자 본인 게이지에 그대로 미러링하므로
+		// 누구를 타고 있든 client.player 기준으로 읽으면 된다
 		Entity vehicle = RiddenVehicle.get(client);
 		if (!(vehicle instanceof LivingEntity livingVehicle)) {
 			reset();
@@ -65,12 +50,6 @@ public final class TireGripFeedback {
 		boolean isDrifting = drifting != null && drifting >= 0.5;
 		WheelForceFeedback.setTiresBrokenLoose(isDrifting);
 
-		// A real slide is always fed through as the gauge reading 100%, not
-		// whatever the reset briefly leaves on the XP bar - state-drift is
-		// what actually says the tires are broken loose, the bar doesn't.
-		// WheelForceFeedback keeps rendering this magnitude, just with no
-		// centering pull underneath it, while tiresBrokenLoose is set - see
-		// its own comment.
 		float gripProgress = isDrifting ? 1f : client.player.experienceProgress;
 		float magnitude = gripProgress > GRIP_RAMP_START
 				? (gripProgress - GRIP_RAMP_START) / (1f - GRIP_RAMP_START) * GRIP_RAMP_MAX_MAGNITUDE
@@ -84,7 +63,7 @@ public final class TireGripFeedback {
 		WheelForceFeedback.setTiresBrokenLoose(false);
 	}
 
-	/** Matched by modifier id *path* only (namespace-agnostic) since MCRider's exact namespace for these isn't known here. */
+	// 모디파이어의 네임스페이스는 알 수 없어서 path만 매칭
 	private static Double modifierAmount(AttributeInstance instance, String path) {
 		for (AttributeModifier modifier : instance.getModifiers()) {
 			if (modifier.id().getPath().equals(path)) {

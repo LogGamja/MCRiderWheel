@@ -14,37 +14,16 @@ import org.slf4j.LoggerFactory;
 import java.util.HashSet;
 import java.util.Set;
 
-/**
- * Uses SDL's raw joystick API (not GLFW, not a gamepad-mapping API) so that
- * non-Xbox-layout devices like a Thrustmaster T500 RS wheel are read with
- * their real axis/button layout instead of being forced into a generic
- * controller mapping - see SdlJoystickReader for why SDL specifically.
- *
- * Driving control and force feedback both arm themselves automatically
- * whenever a calibrated wheel is present - there is no on/off key for
- * either anymore. Calibration lives in the ESC menu's "MCRider Wheel"
- * screen. The zombie-attacks-door sound used as an impact-pulse cue is
- * hooked at the packet level (see SoundPacketMixin), not via
- * SoundManager.addListener() - that listener only fires after the local
- * audio engine has already computed a non-zero playback volume, so a
- * sound that's server-broadcast but too quiet/far to actually be heard
- * locally never reaches it.
- */
+// GLFW 대신 SDL의 raw joystick API를 써서 T500 RS 같은 비표준 레이아웃 휠도
+// 실제 축/버튼 그대로 읽는다. 주행/힘 피드백은 계산된 휠이 있으면 자동으로 켜지고
+// 별도 켜기/끄기 키는 없다. 계산은 ESC 메뉴의 "MCRider Wheel" 화면에서 진행한다.
+// 문 부수는 소리로 만드는 충돌 펄스는 패킷 레벨에서 후킹한다 (SoundPacketMixin 참고)
 public class WheelClientMain implements ClientModInitializer {
 	public static final Logger LOGGER = LoggerFactory.getLogger("mcriderwheel");
 
-	// Keyed by GUID rather than SDL's enumeration index - unlike GLFW's
-	// jid (stable per physical slot while connected), SDL's device index
-	// isn't a stable identity and can shift when other devices connect or
-	// disconnect, which would misattribute connect/disconnect events under
-	// an index-keyed map.
+	// GLFW의 jid와 달리 SDL의 장치 인덱스는 안정적이지 않아 GUID로 키를 잡는다
 	private final Set<String> connectedGuids = new HashSet<>();
-	// Set when a present joystick has no saved WheelConfig profile (checked
-	// on world join, and again whenever a joystick is freshly connected
-	// mid-session) - consumed on the next tick where a world is actually
-	// loaded and no other screen is up, rather than forcing the screen open
-	// immediately, since forcing it during the join sequence itself risks
-	// getting clobbered by the game's own loading-screen transitions.
+	// 연결된 조이스틱에 저장된 프로필이 없을 때 설정, 월드 로드 후 다른 화면이 없을 때 소비된다
 	private boolean pendingAutoCalibration;
 
 	@Override
@@ -53,11 +32,7 @@ public class WheelClientMain implements ClientModInitializer {
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
 			WheelForceFeedback.shutdown();
 			WheelDrivingControl.shutdown(client);
-			// WheelForceFeedback.shutdown() only tears down its own haptic
-			// handles/subsystem - the separate SDL_Joystick handle WheelInput/
-			// WheelCalibrationScreen keep open through SdlJoystickReader for
-			// buttons/axes is otherwise left open (and the joystick subsystem
-			// left refcounted up) until the process exits.
+			// SDL_Joystick 핸들은 WheelForceFeedback.shutdown()이 안 건드리므로 따로 닫는다
 			SdlJoystickReader.close();
 		});
 
@@ -71,21 +46,11 @@ public class WheelClientMain implements ClientModInitializer {
 				safeTick("tickRotation", () -> WheelDrivingControl.tickRotation(Minecraft.getInstance())));
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			// Each subsystem runs in its own try/catch rather than one around the
-			// whole tick: TireGripFeedback/DirectionMismatchFeedback in particular
-			// read MCRider's internal state through ad-hoc, reverse-engineered
-			// heuristics (attribute-modifier IDs, a passenger's display name -
-			// see their own doc comments) that an MCRider update could change
-			// out from under this mod at any time. A Java exception there
-			// shouldn't be able to take driving/FFB down with it for the rest
-			// of the tick, let alone crash the whole client - it's isolated,
-			// logged, and simply retried next tick instead.
+			// 각 서브시스템을 개별 try/catch로 묶어서, 하나가 터져도 나머지와 다음 틱은 계속 돈다
 			safeTick("checkConnections", this::checkConnections);
 			safeTick("WheelInput", WheelInput::tick);
 			safeTick("WheelDrivingControl", () -> WheelDrivingControl.tick(client));
-			// Both feed WheelForceFeedback's per-tick state (extra resistance /
-			// grip vibration) - must run before WheelForceFeedback.tick() itself
-			// or FFB always renders one tick stale.
+			// FFB보다 먼저 실행되어야 그 틱의 값을 바로 반영한다
 			safeTick("DirectionMismatchFeedback", () -> DirectionMismatchFeedback.tick(client));
 			safeTick("TireGripFeedback", () -> TireGripFeedback.tick(client));
 			safeTick("WheelForceFeedback", WheelForceFeedback::tick);
@@ -97,17 +62,7 @@ public class WheelClientMain implements ClientModInitializer {
 		});
 	}
 
-	/**
-	 * Runs one subsystem's per-tick/per-frame work in isolation. A JNA/SDL
-	 * call crashing the JVM outright (EXCEPTION_ACCESS_VIOLATION) can't be
-	 * caught by any Java try/catch - that class of failure is guarded against
-	 * at its own source instead (see SdlJoystickReader/SdlForceFeedback's own
-	 * try/catches and WheelForceFeedback's nativeFaulted latch). This is the
-	 * separate case of an ordinary Java exception (NPE, out-of-bounds,
-	 * a third-party mod's data shape changing) - those don't corrupt JVM
-	 * state, so unlike a native fault there's no reason to stop retrying;
-	 * logging and letting the next tick try again is enough.
-	 */
+	// 네이티브 크래시는 여기서 못 잡지만, 일반 Java 예외는 로그만 남기고 다음 틱에 재시도한다
 	private static void safeTick(String name, Runnable task) {
 		try {
 			task.run();
@@ -116,16 +71,7 @@ public class WheelClientMain implements ClientModInitializer {
 		}
 	}
 
-	/**
-	 * "Uncalibrated" here means "can't actually steer yet", not just "has no
-	 * saved profile" - a device that only went through BUTTONS_ONLY (e.g. a
-	 * paddle-shifter box, or a wheel whose steering calibration was skipped)
-	 * saves a profile with steerAxis = -1, which WheelInput's own
-	 * isDriveable() check already treats as non-driving. Without also
-	 * checking it here, that saved-but-undriveable profile would count as
-	 * "already calibrated" and the auto-calibration prompt would never offer
-	 * to finish wiring up steering for it.
-	 */
+	// steerAxis = -1로 저장된 프로필(BUTTONS_ONLY만 마친 장치)도 "아직 조향 불가능"으로 취급한다
 	private boolean anyUncalibratedJoystickPresent() {
 		int count = SdlJoystickReader.deviceCount();
 		for (int i = 0; i < count; i++) {
@@ -139,12 +85,6 @@ public class WheelClientMain implements ClientModInitializer {
 		return false;
 	}
 
-	/**
-	 * Whether some present joystick already has a saved, driveable profile -
-	 * if so, the player has a working calibrated wheel and an unrelated
-	 * uncalibrated device (e.g. a gamepad, or another wheel that only ever
-	 * got BUTTONS_ONLY treatment) shouldn't force the calibration wizard open.
-	 */
 	private boolean anyCalibratedJoystickPresent() {
 		int count = SdlJoystickReader.deviceCount();
 		for (int i = 0; i < count; i++) {
@@ -158,13 +98,7 @@ public class WheelClientMain implements ClientModInitializer {
 		return false;
 	}
 
-	/**
-	 * Log-only, not chat: this fires for every device present on the very
-	 * first tick (connectedGuids starts empty), so a normal two-wheel setup
-	 * used to print two "joystick connected" lines into chat on every single
-	 * world join - the log file is the right place for this, not the chat
-	 * the player actually plays in.
-	 */
+	// 로그로만 남긴다 - 매 월드 접속 첫 틱마다 채팅창에 뜨면 시끄럽다
 	private void checkConnections() {
 		Set<String> present = new HashSet<>();
 		int count = SdlJoystickReader.deviceCount();

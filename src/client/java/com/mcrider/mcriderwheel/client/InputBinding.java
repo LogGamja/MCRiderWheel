@@ -1,17 +1,10 @@
 package com.mcrider.mcriderwheel.client;
 
-/**
- * A single misc input captured during BUTTONS_ONLY calibration - a real SDL
- * joystick button, a HAT (POV/D-pad) direction treated as a digital button,
- * or a spare axis (e.g. a clutch pedal with nothing else to do) treated as a
- * digital on/off press relative to its released/pressed readings, the same
- * way pedal axes are normalized elsewhere. Exactly one of
- * buttonIndex/hatIndex/axisIndex is set; -1 means unbound.
- */
+// 버튼, HAT 방향, 남는 축(페달 등) 중 하나만 설정되고 나머지는 -1이다
 public class InputBinding {
 	public int buttonIndex = -1;
 	public int hatIndex = -1;
-	/** One of SDL's SDL_HAT_UP/RIGHT/DOWN/LEFT bit values; only meaningful when hatIndex >= 0. */
+	// hatIndex >= 0일 때만 의미 있는 SDL_HAT_UP/RIGHT/DOWN/LEFT 값
 	public int hatDirection = -1;
 	public int axisIndex = -1;
 	public float axisReleased;

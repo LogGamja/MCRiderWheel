@@ -16,38 +16,17 @@ import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Stores one calibrated {@link WheelProfile} per device GUID so a wheel
- * only needs to be calibrated once, regardless of USB port/reconnects, plus
- * which GUID (if any) should be preferred to drive with when more than one
- * calibrated wheel is connected at once (see WheelInput's own use of
- * getPreferredGuid()). Set either by explicitly picking a device in
- * WheelDeviceSelectScreen, or automatically whenever a device finishes (or
- * re-finishes) any part of calibration (see WheelCalibrationScreen's
- * completeAndSave()/persistProgress()) - a wheel someone just calibrated is
- * almost always the one they want driving now.
- */
+// GUID별 WheelProfile 저장, 선호 장치(preferredGuid), 자동 보정 거부 목록을 관리한다
 public class WheelConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 	private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("mcriderwheel-config.json");
 	private static Map<String, WheelProfile> profiles;
 	private static String preferredGuid;
-	// GUIDs the player has dismissed the auto-calibration wizard for (see
-	// WheelCalibrationScreen's autoTriggered handling) without finishing it -
-	// without this, an uncalibrated gamepad/second device left plugged in
-	// re-prompts on every single world join/hotplug forever, since nothing
-	// else ever marks it as "already asked about this one".
+	// 자동 보정 안내를 완료하지 않고 넘긴 GUID들 - 매번 다시 뜨는 걸 막기 위함
 	private static java.util.Set<String> declinedAutoCalibrationGuids;
 
-	/**
-	 * Every caller elsewhere in the mod compares GUIDs with equalsIgnoreCase
-	 * (SdlJoystickReader.open(), WheelInput's preferred-device match,
-	 * WheelForceFeedback's device lookups) since SDL's own GUID string casing
-	 * isn't guaranteed stable. This map's keys - and preferredGuid - are
-	 * normalized to lowercase on the way in so a lookup here can just be a
-	 * plain HashMap get() instead of every caller needing its own
-	 * case-insensitive scan.
-	 */
+	// GUID 대소문자가 항상 같다는 보장이 없어서, 여기서 소문자로 정규화해두고
+	// 모든 조회가 대소문자 무시 스캔을 각자 다시 구현할 필요가 없게 한다
 	private static String normalize(String guid) {
 		return guid == null ? null : guid.toLowerCase(java.util.Locale.ROOT);
 	}
@@ -69,7 +48,7 @@ public class WheelConfig {
 				if (root != null) {
 					Type profilesType = new TypeToken<Map<String, WheelProfile>>() {}.getType();
 					if (root.has("profiles")) {
-						// Current format: {"profiles": {guid: profile, ...}, "preferredGuid": "..."}.
+						// 현재 포맷: {"profiles": {...}, "preferredGuid": "...", "declinedAutoCalibration": [...]}
 						Map<String, WheelProfile> loaded = GSON.fromJson(root.get("profiles"), profilesType);
 						putAllNormalized(loaded);
 						if (root.has("preferredGuid") && !root.get("preferredGuid").isJsonNull()) {
@@ -85,31 +64,21 @@ public class WheelConfig {
 							}
 						}
 					} else {
-						// Pre-existing files saved before preferredGuid was added: the
-						// root object itself is the guid->profile map with no wrapper.
+						// preferredGuid가 생기기 전의 구 포맷: 루트 자체가 guid->profile 맵
 						Map<String, WheelProfile> loaded = GSON.fromJson(root, profilesType);
 						putAllNormalized(loaded);
 					}
 				}
 			} catch (Exception e) {
-				// Not just IOException: a truncated/hand-edited file makes Gson
-				// throw JsonSyntaxException, which would otherwise propagate out
-				// of the client tick and crash the game instead of just losing
-				// the saved profiles.
+				// 손상된 파일은 JsonSyntaxException 등으로 여기까지 안 올라오게 막고
+				// 다음 save() 호출로 덮어써지기 전에 원본을 백업해둔다
 				WheelClientMain.LOGGER.warn("Failed to load wheel config", e);
-				// profiles is whatever partial state survived the failed parse
-				// (possibly empty) - the very next save() call (e.g. right after
-				// calibrating) overwrites this file with just that, permanently
-				// losing any profile the failed parse didn't recover. Backing up
-				// the unreadable file here, before anything can write over it,
-				// is what actually saves it - not a JSON-repair attempt, just a
-				// copy the player can hand-recover from.
 				backupUnreadableFile();
 			}
 		}
 	}
 
-	/** Best-effort copy of the unparseable config file to a sibling .bak, so a failed load doesn't just quietly vanish once the next save() overwrites the original. */
+	// 파싱 실패한 설정 파일을 .bak으로 복사해서 나중에 수동 복구라도 할 수 있게 한다
 	private static void backupUnreadableFile() {
 		try {
 			Path backup = FILE.resolveSibling(FILE.getFileName() + ".bak");
@@ -131,7 +100,7 @@ public class WheelConfig {
 		writeToDisk();
 	}
 
-	/** GUID to prefer driving with (explicitly picked via WheelDeviceSelectScreen, or auto-set on calibration - see this class's doc comment), or null to just use whichever calibrated device SDL enumerates first (the original behavior). */
+	// 명시적으로 고르거나(WheelDeviceSelectScreen) 보정을 마칠 때 자동으로 설정되는 선호 장치
 	public static String getPreferredGuid() {
 		ensureLoaded();
 		return preferredGuid;
@@ -143,13 +112,11 @@ public class WheelConfig {
 		writeToDisk();
 	}
 
-	/** Whether the player has already dismissed the auto-calibration wizard for this device without finishing it - see WheelCalibrationScreen's autoTriggered handling. */
 	public static boolean isAutoCalibrationDeclined(String guid) {
 		ensureLoaded();
 		return guid != null && declinedAutoCalibrationGuids.contains(normalize(guid));
 	}
 
-	/** Marks this device as "already asked" so the auto-calibration wizard stops offering to calibrate it on every join/hotplug. */
 	public static void declineAutoCalibration(String guid) {
 		ensureLoaded();
 		if (guid == null) return;
@@ -157,14 +124,7 @@ public class WheelConfig {
 		writeToDisk();
 	}
 
-	/**
-	 * Clears a previously-declined device's "already asked" flag - called from
-	 * WheelCalibrationScreen when the player actually advances past its INTRO
-	 * step for this device, i.e. a fresh, active decision to work on it now.
-	 * Without this there was no way back from one accidental/changed-mind
-	 * decline short of hand-editing the config file: declineAutoCalibration()
-	 * is the only other place that ever touches this set, and it's one-way.
-	 */
+	// 보정 위저드에서 이 장치의 INTRO 단계를 실제로 넘어갈 때 호출되어 거부 플래그를 해제한다
 	public static void clearAutoCalibrationDecline(String guid) {
 		ensureLoaded();
 		if (guid == null) return;
@@ -173,17 +133,8 @@ public class WheelConfig {
 		}
 	}
 
-	/**
-	 * Writes through a sibling .tmp file plus an atomic rename rather than
-	 * truncating FILE directly - this project has a documented history of the
-	 * whole process dying to an uncatchable native access violation (see
-	 * SdlJoystickReader/SdlForceFeedback's own doc comments), and a truncate-
-	 * in-place write straddled by exactly that kind of crash would leave every
-	 * saved profile permanently lost, not just the one save() call in
-	 * progress. Files.move with ATOMIC_MOVE makes the rename itself all-or-
-	 * nothing so FILE is always either the old complete contents or the new
-	 * complete contents, never a half-written truncation.
-	 */
+	// tmp 파일에 쓴 다음 원자적 rename으로 교체한다 - 저장 도중 네이티브 크래시가 나도
+	// 파일이 절반만 쓰인 채로 남는 일이 없도록 하기 위함
 	private static void writeToDisk() {
 		Path tmp = FILE.resolveSibling(FILE.getFileName() + ".tmp");
 		try {
@@ -202,12 +153,7 @@ public class WheelConfig {
 			try {
 				Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 			} catch (java.nio.file.AtomicMoveNotSupportedException e) {
-				// Same-filesystem atomic rename isn't guaranteed on every
-				// platform/filesystem combination - a non-atomic replace here
-				// is still strictly better than the old always-truncate path
-				// (the window where FILE could end up truncated shrinks to
-				// just this fallback move itself, not the whole JSON
-				// serialization+write above it).
+				// 일부 플랫폼/파일시스템에서는 원자적 rename이 안 되므로 대체 경로로 폴백
 				Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING);
 			}
 		} catch (IOException e) {

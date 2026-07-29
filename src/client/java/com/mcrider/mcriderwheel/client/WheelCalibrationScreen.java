@@ -6,15 +6,9 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
-/**
- * Device-agnostic calibration wizard: instead of hardcoding axis layouts
- * per wheel model, the player performs each action (center, full left,
- * full right, pedals) and we figure out which axis moved and by how much.
- *
- * {@link Scope} lets the wizard cover just the wheel, just the pedals, or
- * just the button mappings, re-running only that section while leaving
- * whatever else is already saved for this device untouched.
- */
+// 장치 모델을 하드코딩하지 않고, 플레이어가 각 동작(중앙, 완전 좌/우, 페달)을 수행하면
+// 어느 축이 얼마나 움직였는지 직접 알아내는 보정 위저드.
+// Scope로 휠/페달/버튼 중 일부만 다시 보정하고 나머지는 그대로 둘 수 있다
 public class WheelCalibrationScreen extends Screen {
 
 	public enum Scope {
@@ -40,39 +34,22 @@ public class WheelCalibrationScreen extends Screen {
 		HOTBAR_SHIFT_BUTTON, DONE
 	}
 
-	/** Axis must move at least this far from its baseline to count as a deliberate press (filters out drift/noise). */
+	// 기준선에서 이 정도는 움직여야 의도적인 입력으로 인정 (드리프트/노이즈 필터링)
 	private static final float AXIS_CAPTURE_DELTA = 0.3f;
 
-	/** Degree presets offered on the lock-range picker; -1 means "use the full measured lock". */
+	// 락 범위 선택 화면에 제시하는 각도, -1은 "실측 풀 락 그대로"
 	private static final float[] LOCK_RANGE_PRESETS = {90f, 180f, 270f, 450f, 900f, -1f};
 
-	// Max tick-to-tick wobble an axis may have and still count as "at rest" -
-	// used only to keep axisBaseline tracking an axis's live resting point
-	// (see checkInputCapture), not to gate how long a press must be held.
+	// axisBaseline이 "정지 상태"로 판단하는 틱 간 허용 흔들림
 	private static final float CAPTURE_JITTER_BAND = 0.05f;
 
-	// Threshold for the *raw* axis diagnostic line only (see
-	// updateRawEventDiagnostic) - deliberately unrelated to
-	// AXIS_CAPTURE_DELTA/isExcludedAxis, so a physically moving axis always
-	// shows up here even if it's excluded or too small to actually capture.
-	// Without this, a spare-pedal axis that's excluded (already claimed as
-	// steer/throttle/brake, or flagged noisy) would look indistinguishable
-	// from one SDL isn't reading at all - both showed nothing on "최근 아날로그".
+	// "최근 아날로그" 진단 표시 전용 임계값 - 제외된 축이라도 물리적으로 움직이면 보여야 하므로
+	// AXIS_CAPTURE_DELTA/isExcludedAxis와는 별개로 둔다
 	private static final float AXIS_DIAGNOSTIC_DELTA = 0.05f;
 
-	// On a device that combines many peripherals into one huge button/axis
-	// set, some channels can misbehave right as the wizard opens (driver/
-	// virtual-joystick-layer startup quirks). BUTTON_NOISE_SAMPLE_NANOS is a
-	// dedicated "hands off, watching for real" window before the per-control
-	// steps start: whatever moves at all during it gets permanently excluded
-	// (see noisyButtons/noisyAxes), rather than re-litigated on every future
-	// tick. This used to be 30s and required multi-tick-hold + explicit
-	// confirm on top of it to work around a GLFW/DirectInput bug that
-	// corrupted button reads past index 32 on high-button-count wheels; now
-	// that button reads go through SDL instead (see SdlJoystickReader) that
-	// bug no longer applies, so capture is a plain edge trigger and this
-	// window is just a shorter startup sanity pass.
-	private static final long BUTTON_NOISE_SAMPLE_NANOS = 10_000_000_000L; // 10 seconds
+	// 위저드가 열리자마자 드라이버/가상조이스틱 계층의 시동 잡음이 섞일 수 있어서
+	// 이 시간 동안 손을 떼게 하고, 그 사이 움직인 버튼/축은 영구 제외한다
+	private static final long BUTTON_NOISE_SAMPLE_NANOS = 10_000_000_000L; // 10초
 
 	private static final int[] HAT_DIRECTION_BITS = {
 			io.github.libsdl4j.api.joystick.SdlJoystickConst.SDL_HAT_UP,
@@ -80,13 +57,9 @@ public class WheelCalibrationScreen extends Screen {
 			io.github.libsdl4j.api.joystick.SdlJoystickConst.SDL_HAT_DOWN,
 			io.github.libsdl4j.api.joystick.SdlJoystickConst.SDL_HAT_LEFT,
 	};
-	// Index-matched with HAT_DIRECTION_BITS - "HAT"/"POV" is SDL/hardware
-	// jargon for what's really just a directional button (a D-pad direction
-	// on a wheel rim, e.g. a hat switch), so the UI calls it "방향 버튼"
-	// everywhere instead.
 	private static final String[] HAT_DIRECTION_NAMES = {"위", "오른쪽", "아래", "왼쪽"};
 
-	/** Korean label for a HAT bitmask - a single direction (one of HAT_DIRECTION_BITS) or a diagonal OR of two. */
+	// HAT 비트마스크에 대한 한국어 표기 (단일 방향 또는 대각선 조합)
 	private static String hatDirectionName(int bitmask) {
 		if (bitmask == io.github.libsdl4j.api.joystick.SdlJoystickConst.SDL_HAT_CENTERED) return "중앙";
 		StringBuilder sb = new StringBuilder();
@@ -101,13 +74,9 @@ public class WheelCalibrationScreen extends Screen {
 
 	private final Scope scope;
 	private final Screen parent;
-	// Whether this instance was opened by WheelClientMain's own join/hotplug
-	// prompt rather than picked from the pause-menu settings screen - see
-	// onClose()'s use of this.
+	// 설정 화면이 아니라 WheelClientMain의 접속/핫플러그 안내로 열렸는지 - onClose()에서 사용
 	private final boolean autoTriggered;
-	// Set once the wizard actually reaches Step.DONE (see goTo()) - not set
-	// on a mid-wizard bailout (ESC, [나가기]), which is exactly the case
-	// onClose() needs to tell apart for autoTriggered's decline handling.
+	// 위저드가 실제로 DONE까지 도달했는지 - 중간 이탈(ESC, 나가기)과 구분하기 위함
 	private boolean reachedDone;
 	private Step step = Step.INTRO;
 	private String selectedGuid;
@@ -116,65 +85,39 @@ public class WheelCalibrationScreen extends Screen {
 	private float[] leftSnap;
 	private float[] rightSnap;
 	private float[] ref90Snap;
-	private float desiredLockDeg = -1f; // -1 = use the full measured lock, no clamping
+	private float desiredLockDeg = -1f; // -1 = 실측 풀 락 그대로
 	private float[] throttleUpSnap;
 	private float[] throttleDownSnap;
 	private float[] brakeUpSnap;
 	private float[] brakeDownSnap;
-	// Warning banner text (null = none) shown for the rest of this wizard
-	// session once bestAxis() has failed to identify a steering axis - see
-	// computeSteerFields(), which leaves the profile's existing steer fields
-	// untouched in that case rather than overwriting a working calibration
-	// with a broken one. Held as the message rather than a bare flag because
-	// what to tell the player depends on whether that no-op actually preserved
-	// anything: a wheel that was already driveable keeps working, a
-	// never-calibrated one is simply still unusable, and saying "keeping your
-	// existing settings" to the latter would be a lie.
+	// 조향축 인식 실패 시 남기는 경고 배너 텍스트 (null = 없음).
+	// 기존에 잘 작동하던 보정을 지켰는지, 아예 처음부터 조향 불가능했는지에 따라 문구가 다르다
 	private String steerCalibrationWarning;
 
 	private WheelProfile profile;
 	private float[] axisBaseline;
-	// Peak |deviation from axisBaseline| (and the raw value at that peak)
-	// seen per axis since it last settled back to rest - see the axis
-	// section of checkInputCapture() for why the *peak* is what gets
-	// captured as axisPressed rather than whatever the axis reads on
-	// whichever tick happens to be live when a candidate is chosen.
+	// 마지막으로 정지 상태였던 이후 각 축의 최대 편차(및 그때의 raw 값) - 순간값이 아니라
+	// 최댓값을 잡아야 눌렀다 뗀 페달의 진짜 최대 이동량을 놓치지 않는다
 	private float[] axisPeakDeviation;
 	private float[] axisPeakValue;
 	private final java.util.Set<Integer> claimedAxes = new java.util.HashSet<>();
-	// Populated once by BUTTON_NOISE_SAMPLE and never touched again -
-	// indices that moved at all during the hands-off sampling window, so
-	// they're never reconsidered as a candidate no matter how they later
-	// happen to settle. See BUTTON_NOISE_SAMPLE_NANOS.
+	// BUTTON_NOISE_SAMPLE 동안 한 번이라도 움직인 인덱스 - 이후 다시는 후보로 고려하지 않는다
 	private final java.util.Set<Integer> noisyButtons = new java.util.HashSet<>();
 	private final java.util.Set<Integer> noisyAxes = new java.util.HashSet<>();
 	private long noiseSampleStartNanos = -1;
-	// Edge-detection state for button/HAT capture (see checkInputCapture) -
-	// sized/seeded once for the whole button-mapping phase, not reset per
-	// step, so a button still held from the moment it was just captured
-	// doesn't immediately re-trigger the next step.
+	// 버튼/HAT 캡처용 엣지 감지 상태 - 버튼 매핑 단계 전체에 걸쳐 한 번만 초기화된다
 	private boolean[] prevCaptureButtonsDown;
 	private byte[] prevCaptureHats;
-	// Set the instant a candidate is detected, and re-set (overwriting
-	// whatever was pending) if a *different* input edge-triggers while still
-	// awaiting confirm - so pressing the wrong control and then the right one
-	// just re-prompts for the new one instead of getting stuck. Unlike the
-	// old confirm gate, this doesn't require the candidate to still be held:
-	// the player can press-and-release, then click [확인] separately.
+	// 후보가 감지되는 즉시 설정되고, 확인 대기 중에 다른 입력이 들어오면 그걸로 교체된다.
+	// 누르고 뗀 다음 따로 [확인]을 눌러도 되고, 계속 누르고 있을 필요는 없다
 	private InputBinding pendingBinding;
 	private boolean awaitingConfirm;
-	// Per-axis peak deviation already standing when the current capture
-	// opportunity opened (a new step, or a button/HAT candidate becoming
-	// pending) - the bar an axis has to clear on top of AXIS_CAPTURE_DELTA
-	// before it counts as a fresh press. See checkInputCapture().
+	// 이번 캡처 기회(새 단계, 또는 버튼/HAT 후보 대기 시작)가 열렸을 때 이미 서 있던
+	// 축별 최대 편차 - checkInputCapture()에서 이 값 위로 더 움직여야 새 입력으로 인정된다
 	private float[] axisOverrideFloor;
-	// Step axisOverrideFloor was last taken for, so every capture step starts
-	// against its own floor rather than inheriting the previous step's.
 	private Step axisFloorStep;
 
-	// Raw diagnostics for figuring out which physical control an
-	// unrecognized input actually is - runs alongside (and independently of)
-	// the gating in checkInputCapture, purely for display.
+	// 인식 안 된 입력이 실제로 어떤 물리 컨트롤인지 알아보기 위한 원시 진단용 - 표시 전용
 	private boolean[] prevButtonsDown;
 	private byte[] prevHats;
 	private float[] prevAxisValues;
@@ -198,26 +141,16 @@ public class WheelCalibrationScreen extends Screen {
 	private Button skipButton;
 	private Button exitButton;
 	private final Button[] lockRangeButtons = new Button[LOCK_RANGE_PRESETS.length];
-	// One button per device shown on the INTRO step, letting the player
-	// override findFirstDeviceGuid()'s auto-pick - see selectDevice().
+	// INTRO 단계에서 장치를 직접 고를 수 있게 하는 버튼들 - selectDevice() 참고
 	private final java.util.List<Button> deviceButtons = new java.util.ArrayList<>();
-	// Upper bound on how many of SdlJoystickReader's enumerated devices get
-	// their own selectable button, so a machine enumerating an unusual number
-	// of joysticks (virtual devices, a wheel that splits into several entries)
-	// doesn't turn this step into an endless column. Whatever doesn't fit is
-	// reported as a count by render() rather than silently vanishing.
+	// 장치가 비정상적으로 많이 열거되는 환경에서 목록이 무한정 길어지지 않도록 상한을 둔다
 	private static final int MAX_SELECTABLE_DEVICE_BUTTONS = 6;
-	// Y the nav stack ([다음] / [나가기]) starts at on the INTRO step - unlike
-	// every other step's fixed position, this has to clear the device list
-	// above it, whose length varies. Set in init(), applied every tick by
-	// updateWidgetVisibility().
+	// INTRO 단계에서 [다음]/[나가기]가 시작되는 Y - 장치 목록 길이에 따라 달라진다
 	private int introNextY;
-	// How many enumerated devices didn't get a button (cap or screen room),
-	// and where the list that did fit ends - both only for render()'s note.
 	private int hiddenDeviceCount;
 	private int deviceListBottom;
 
-	/** Opened by WheelClientMain's own auto-calibration prompt (join/hotplug), not from the settings screen - see the autoTriggered field. */
+	// WheelClientMain의 자동 보정 안내로 열렸을 때 (설정 화면에서 연 게 아님)
 	public WheelCalibrationScreen() {
 		this(Scope.FULL, null, true);
 	}
@@ -236,7 +169,7 @@ public class WheelCalibrationScreen extends Screen {
 	@Override
 	protected void init() {
 		ensureDeviceSelected();
-		ensureProfile(); // load any existing steer/pedal axes early so button capture can exclude them
+		ensureProfile(); // 버튼 캡처가 조향/페달 축을 제외할 수 있도록 미리 로드
 
 		nextButton = Button.builder(Component.literal("다음"), b -> {
 					if (awaitingConfirm) {
@@ -254,10 +187,7 @@ public class WheelCalibrationScreen extends Screen {
 				.build();
 		addRenderableWidget(skipButton);
 
-		// Y is re-set every tick in updateWidgetVisibility() - [건너뛰기] only
-		// exists on some steps, and leaving this at its "skip is showing"
-		// position the rest of the time strands an empty row between it and
-		// [다음].
+		// Y는 updateWidgetVisibility()가 매 틱 다시 잡는다
 		exitButton = Button.builder(Component.literal("나가기"), b -> onClose())
 				.bounds(width / 2 - 100, height / 2 + 90, 200, 20)
 				.build();
@@ -282,39 +212,17 @@ public class WheelCalibrationScreen extends Screen {
 			addRenderableWidget(btn);
 		}
 
-		// One selectable button per device SDL currently enumerates. Clicking one
-		// only marks it as chosen; [다음] is what starts the wizard (see
-		// selectDevice()). Also how a second/different wheel gets calibrated at
-		// all, since findFirstDeviceGuid() otherwise always prefers whatever
-		// WheelInput already recognizes.
-		//
-		// init() runs again on every window resize (Screen.resize() clears the
-		// widget list and re-inits), so this own-list has to be cleared too -
-		// otherwise it accumulates orphaned Button objects from every previous
-		// layout, which updateWidgetVisibility() then walks each tick forever.
+		// init()은 창 크기 변경 시마다 다시 실행되므로 목록도 매번 비워야 orphan 위젯이 안 쌓인다
 		deviceButtons.clear();
 		int introPromptLines = promptFor(Step.INTRO).split("\n").length;
 		int devBtnWidth = Math.min(280, width - 20);
-		int devBtnHeight = 20; // vanilla's own button height (e.g. this screen's own [다음]/[취소]/[건너뛰기])
+		int devBtnHeight = 20;
 		int devBtnGap = 4;
-		// Straight under the prompt now that the device *names* are these
-		// buttons rather than a separate text list above them.
 		int devStartY = (height / 2 - 50) + introPromptLines * 10 + 10;
-		// Room is measured down to the bottom of the screen (minus what the
-		// stacked [다음]/[나가기] pair needs to sit below the list), not up to
-		// [다음]'s old fixed height/2 + 40 spot. Measuring against that fixed
-		// spot cancelled `height` out of the arithmetic entirely - the result
-		// was always exactly 2, on every resolution and GUI scale, which made
-		// MAX_SELECTABLE_DEVICE_BUTTONS unreachable and left a third device
-		// impossible to select (and, since nothing lists devices as text,
-		// invisible too). The nav stack now moves down to clear however many
-		// buttons actually fit - see introNextY / updateWidgetVisibility().
 		int navStackHeight = devBtnHeight * 2 + 5;
 		int roomForButtons = Math.max(0, (height - 8 - navStackHeight - devStartY) / (devBtnHeight + devBtnGap));
 		int totalDevices = SdlJoystickReader.deviceCount();
 		int selectableDevices = Math.min(Math.min(totalDevices, MAX_SELECTABLE_DEVICE_BUTTONS), roomForButtons);
-		// `placed` rather than the loop index drives the Y stepping so a device
-		// whose GUID read comes back null doesn't leave a blank slot mid-column.
 		int placed = 0;
 		for (int i = 0; i < totalDevices && placed < selectableDevices; i++) {
 			String guid = SdlJoystickReader.deviceGuid(i);
@@ -331,27 +239,16 @@ public class WheelCalibrationScreen extends Screen {
 		}
 		hiddenDeviceCount = Math.max(0, totalDevices - placed);
 		deviceListBottom = devStartY + placed * (devBtnHeight + devBtnGap);
-		// Never above where [다음] used to sit, so the common one-or-two-device
-		// case looks exactly as it did before.
 		introNextY = Math.max(height / 2 + 40, deviceListBottom + (hiddenDeviceCount > 0 ? 22 : 8));
 
-		// Without this, the lock-range buttons (added visible above) sit
-		// on screen - overlapping [다음] - for up to one tick after init()
-		// before tick() gets a chance to hide them for the INTRO step.
 		updateWidgetVisibility();
 	}
 
 	@Override
 	public void onClose() {
 		if (autoTriggered && !reachedDone && selectedGuid != null) {
-			// The player backed out (ESC, or [나가기]) of a wizard WE opened
-			// automatically, without ever finishing it - remember that so this
-			// same uncalibrated device stops re-opening the wizard on every
-			// future world join/hotplug (see WheelClientMain's
-			// anyUncalibratedJoystickPresent()/checkConnections()). Doesn't
-			// affect calibrating it later from the settings screen: once it's
-			// actually driveable it no longer counts as "uncalibrated" at all,
-			// regardless of this flag.
+			// 자동으로 열린 위저드를 완료하지 않고 나갔으므로, 이 장치는 매번 다시
+			// 안내되지 않게 표시한다. 설정 화면에서 나중에 직접 보정하는 것과는 무관하다
 			WheelConfig.declineAutoCalibration(selectedGuid);
 		}
 		if (parent != null) {
@@ -364,26 +261,12 @@ public class WheelCalibrationScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
-		// Wrapped as a whole: an uncaught exception out of Screen.tick() takes
-		// the whole client down, and everything below here does a lot of
-		// per-axis/per-button array indexing (checkInputCapture,
-		// runNoiseSample) driven by whatever a given device's live axis/button
-		// count happens to be that tick - a device that changes shape mid-wizard
-		// (hotplug, a mode-switching wheel) is exactly the kind of edge case
-		// this is cheap insurance against. Doesn't touch the underlying SDL
-		// calls' own try/catches (SdlJoystickReader) - this is a second,
-		// outermost net for anything Java-level those don't cover.
+		// 전체를 감싼다 - 아래 로직이 장치별 축/버튼 개수로 배열 인덱싱을 많이 하는데
+		// 위저드 도중 장치 형태가 바뀌는 경우(핫플러그 등) 예외가 나도 화면이 죽지 않게 한다
 		try {
 			updateWidgetVisibility();
 			ensureDeviceSelected();
 			SdlJoystickReader.update();
-			// Retried every tick, not just from init() - if SDL hadn't finished
-			// enumerating the device yet the first time init() ran (same
-			// hotplug-detection lag ensureDeviceSelected() already retries for),
-			// profile stayed null for the rest of the button-mapping phase and
-			// isExcludedAxis() had nothing to exclude the steer/throttle/brake
-			// axes with, letting them get captured as misc buttons. Cheap no-op
-			// once profile is already loaded.
 			ensureProfile();
 			if (step == Step.BUTTON_NOISE_SAMPLE) {
 				runNoiseSample();
@@ -399,29 +282,16 @@ public class WheelCalibrationScreen extends Screen {
 		boolean skippable = isButtonCaptureStep(step) || step == Step.BUTTON_NOISE_SAMPLE;
 		skipButton.visible = skippable;
 		skipButton.active = skippable;
-		// INTRO is the one step with a variable-length widget column above the
-		// nav stack (the device list), so there it starts wherever that list
-		// ends; every other step keeps the original fixed position.
 		int navTop = step == Step.INTRO ? introNextY : height / 2 + 40;
 		nextButton.setY(navTop);
 		skipButton.setY(navTop + 25);
-		// Close the gap [건너뛰기] leaves behind on the steps where it's hidden.
 		exitButton.setY(navTop + (skippable ? 50 : 25));
 
-		// Auto-detected on press, or picked from the lock-range buttons, or
-		// auto-timed - clicking [다음] through these steps wouldn't mean
-		// anything. The one exception is awaitingConfirm: [다음] is exactly
-		// how the player confirms a just-detected candidate (see
-		// confirmPendingBinding()), so it needs to reappear - relabeled -
-		// during that pause.
+		// 자동 감지/타이머로 진행되는 단계에서는 [다음]이 의미가 없다. 단, awaitingConfirm은
+		// 방금 감지된 후보를 확인하는 용도라 이때는 [확인]으로 라벨을 바꿔 다시 보여준다
 		boolean waitingForOtherInput = isButtonCaptureStep(step) || step == Step.LOCK_RANGE_SELECT
 				|| step == Step.BUTTON_NOISE_SAMPLE;
 		nextButton.visible = !waitingForOtherInput || awaitingConfirm;
-		// On INTRO, [다음] is what commits to the picked device - with nothing
-		// connected (so nothing selectable) there's no device to calibrate and
-		// it would just walk an empty wizard that never saves anything
-		// (completeAndSave() no-ops with a null profile). Re-checked every tick
-		// since a device can appear while this screen is already open.
 		boolean introHasDevice = step != Step.INTRO || selectedGuid != null;
 		nextButton.active = (!waitingForOtherInput || awaitingConfirm) && introHasDevice;
 		nextButton.setMessage(Component.literal(awaitingConfirm ? "확인" : "다음"));
@@ -439,7 +309,7 @@ public class WheelCalibrationScreen extends Screen {
 		}
 	}
 
-	// --- scope-aware section ordering -------------------------------------------------
+	// --- scope별 단계 순서 -------------------------------------------------
 
 	private Step afterIntro() {
 		if (scope.includesWheel()) return Step.CENTER;
@@ -459,7 +329,7 @@ public class WheelCalibrationScreen extends Screen {
 		return Step.DONE;
 	}
 
-	/** Every transition that might land on DONE goes through here so the save always happens exactly once. */
+	// DONE으로 가는 모든 전환이 여기를 거치게 해서 저장이 정확히 한 번만 일어나게 한다
 	private void goTo(Step next) {
 		if (next == Step.DONE) {
 			completeAndSave();
@@ -475,35 +345,20 @@ public class WheelCalibrationScreen extends Screen {
 				|| s == Step.SWAP_HANDS_BUTTON || s == Step.VIEW_TOGGLE_BUTTON || s == Step.HOTBAR_SHIFT_BUTTON;
 	}
 
-	/**
-	 * Seeded exactly once for the whole button-mapping phase - an axis has
-	 * no clean "at rest" value once it's mid-motion, so re-arming it right
-	 * when a step advances - i.e. while a pedal is still on its way back up
-	 * from being pressed - would look exactly like a brand new press against
-	 * the fresh baseline, cascading the same pedal through every remaining
-	 * step in one motion. Past this initial seed, {@link #checkInputCapture}
-	 * keeps each axis's baseline continuously refreshed while it's at rest
-	 * anyway (see its comment), so this only matters for whatever an axis's
-	 * value happens to be at the very first tick of the phase.
-	 */
+	// 버튼 매핑 단계 전체에서 딱 한 번만 시드한다 - 페달이 복귀 중일 때 다시 시드하면
+	// 그 움직임 자체가 새 입력으로 오인되어 나머지 단계를 연쇄적으로 채워버릴 수 있다
 	private void captureAxisBaselineOnce() {
 		if (axisBaseline != null) return;
 		axisBaseline = snapshot();
 	}
 
-	/** Axes already used for steering/pedals, already claimed by an earlier button-mapping step, or flagged noisy by BUTTON_NOISE_SAMPLE are excluded so they can't be mistaken for a different input. */
+	// 조향/페달로 이미 쓰였거나, 앞선 단계에서 이미 배정됐거나, 노이즈로 표시된 축은 제외한다
 	private boolean isExcludedAxis(int axis) {
 		if (claimedAxes.contains(axis) || noisyAxes.contains(axis)) return true;
 		return profile != null && (axis == profile.steerAxis || axis == profile.throttleAxis || axis == profile.brakeAxis);
 	}
 
-	/**
-	 * Records the most recent raw button/hat transition, independent of
-	 * (and running alongside) the gated capture logic below - purely for
-	 * display, so a control that never actually gets captured (e.g. one
-	 * this class has no support for at all) still shows up as *something*
-	 * happening rather than silent nothing.
-	 */
+	// 실제 캡처 로직과 별개로, 화면에 뭔가 반응하고 있음을 보여주기 위한 원시 이벤트 표시
 	private void updateRawEventDiagnostic() {
 		if (!SdlJoystickReader.isOpen()) return;
 
@@ -513,12 +368,6 @@ public class WheelCalibrationScreen extends Screen {
 		}
 		for (int i = 0; i < buttons; i++) {
 			boolean down = SdlJoystickReader.buttonDown(i);
-			// Shown even when noisyButtons excludes it from real capture -
-			// same reasoning as the axis branch below (isExcludedAxis check):
-			// silently hiding a noise-filtered button here would make it
-			// indistinguishable from one that isn't triggering at all, which
-			// defeats this diagnostic's whole purpose of showing *something*
-			// the instant a control is touched.
 			if (down && !prevButtonsDown[i]) {
 				lastButtonEventText = (i + 1) + "번 버튼 눌림"
 						+ (noisyButtons.contains(i) ? ". 노이즈로 제외된 버튼입니다" : "");
@@ -553,18 +402,8 @@ public class WheelCalibrationScreen extends Screen {
 		}
 	}
 
-	/**
-	 * Runs for BUTTON_NOISE_SAMPLE_NANOS while the player is asked to leave
-	 * the device alone: anything that so much as twitches during this
-	 * window - a button that's ever seen down, or an axis that ever
-	 * deviates past AXIS_CAPTURE_DELTA from its value when sampling began -
-	 * goes into noisyButtons/noisyAxes and is permanently excluded from the
-	 * real capture steps that follow, regardless of how it later settles.
-	 * Unlike axisBaseline's continuous refresh during real capture (which
-	 * deliberately forgives an axis once it returns to rest), this pass
-	 * never forgives - the whole point is to catch things that only
-	 * misbehave *some* of the time.
-	 */
+	// BUTTON_NOISE_SAMPLE_NANOS 동안 손을 뗀 채로 두게 하고, 그 사이 조금이라도
+	// 움직인 버튼/축은 이후 어떻게 안정되든 영구 제외한다
 	private void runNoiseSample() {
 		if (!SdlJoystickReader.isOpen()) return;
 		captureAxisBaselineOnce();
@@ -597,34 +436,15 @@ public class WheelCalibrationScreen extends Screen {
 		}
 	}
 
-	/**
-	 * Auto-detects the next button-mapping capture as a plain edge trigger:
-	 * whichever non-noisy button, HAT direction, or axis is the first to
-	 * newly cross into "pressed" this tick becomes the pending candidate,
-	 * shown to the player for an explicit [확인] before it's actually
-	 * assigned (see confirmPendingBinding()) - no need to still be holding
-	 * it down at that point, unlike the old confirm gate. This used to also
-	 * require a multi-tick hold to work around a GLFW/DirectInput bug that
-	 * corrupted button reads past index 32 on high-button-count wheels - now
-	 * that button (and HAT/axis) reads go through SDL instead (see
-	 * SdlJoystickReader) that bug no longer applies, so detection itself is
-	 * a simple edge trigger; only the human confirm step remains.
-	 */
+	// 노이즈가 아닌 버튼/HAT/축 중 이번 틱에 처음 "눌림"으로 전환된 것을 후보로 잡고
+	// [확인]으로 최종 확정한다 - 계속 누르고 있을 필요는 없다
 	private void checkInputCapture() {
 		if (!isButtonCaptureStep(step) || !SdlJoystickReader.isOpen()) return;
 		captureAxisBaselineOnce();
 		updateRawEventDiagnostic();
 
-		// Re-floor once per step, before this tick's own axis motion is
-		// folded into axisPeakDeviation below - otherwise an axis that's been
-		// sitting elevated since a *previous* step (a rotary dial/H-shifter
-		// with no spring return, left turned away from rest) carries that same
-		// stale peak straight into a brand new step and wins the very first
-		// tick with no real input at all, since nothing was gating it outside
-		// of an already-pending button/HAT candidate (see the old
-		// nonAxisPending-only check this replaced). Snapshotting here instead
-		// of only when a button/HAT candidate shows up covers that gap while
-		// still only resetting the floor when the step itself actually changes.
+		// 단계가 바뀔 때마다 한 번만 floor를 다시 잡는다 - 안 그러면 스프링이 없는
+		// 로터리 다이얼 등이 이전 단계에서 남긴 편차로 새 단계 첫 틱에 바로 당첨돼버린다
 		if (axisFloorStep != step) {
 			snapshotAxisOverrideFloor();
 			axisFloorStep = step;
@@ -673,30 +493,10 @@ public class WheelCalibrationScreen extends Screen {
 			}
 		}
 
-		// Axes: pick whichever unexcluded axis deviates *most* from baseline
-		// (rather than the first past the threshold), so a genuinely
-		// full-travel press wins over a smaller spike on an unrelated axis.
-		//
-		// axisBaseline itself is kept live here, not just seeded once: any
-		// axis currently within CAPTURE_JITTER_BAND of its own stored
-		// baseline is considered "at rest" and has its baseline refreshed to
-		// its current value. Otherwise an axis that simply isn't centered at
-		// the single instant the whole phase's baseline snapshot happened to
-		// be taken - permanently sitting elevated, never actually moving -
-		// would look exactly like a real press against that stale snapshot
-		// forever. Refreshing while at rest means only genuine motion away
-		// from wherever an axis was actually sitting can trigger a capture.
-		//
-		// The candidate's value is the *peak* deviation seen since the axis
-		// last sat at rest, not just whatever it happens to read on the tick
-		// a candidate is (re-)selected. A press-then-release (the wizard
-		// explicitly doesn't require still holding it at confirm time) spends
-		// its last few ticks above AXIS_CAPTURE_DELTA sliding back down
-		// through that threshold on the way to rest - capturing the live
-		// value on one of those ticks instead of the true peak could grab
-		// something barely over the threshold rather than near full travel,
-		// which then makes isDown()'s pressed/released midpoint absurdly
-		// sensitive at runtime (see InputBinding/WheelDrivingControl.isDown).
+		// 축: 기준선에서 가장 많이 벗어난 축을 고른다 (제일 먼저 임계값을 넘은 게 아니라).
+		// axisBaseline은 계속 살아있는 값이라, 정지 상태(jitter band 이내)인 축은
+		// 기준선을 현재 값으로 계속 갱신해서 실제로 움직인 축만 후보가 될 수 있게 한다.
+		// 후보 값은 순간값이 아니라 정지 상태 이후의 최대 편차값을 쓴다
 		if (axisBaseline != null && axisBaseline.length > 0) {
 			int count = Math.min(SdlJoystickReader.axisCount(), axisBaseline.length);
 			if (axisPeakDeviation == null || axisPeakDeviation.length != axisBaseline.length) {
@@ -709,7 +509,7 @@ public class WheelCalibrationScreen extends Screen {
 				float deviation = Math.abs(current - axisBaseline[i]);
 				if (deviation <= CAPTURE_JITTER_BAND) {
 					axisBaseline[i] = current;
-					axisPeakDeviation[i] = 0f; // back at rest - forget the peak so the next real press starts fresh
+					axisPeakDeviation[i] = 0f; // 정지 상태로 복귀 - 다음 진짜 입력을 위해 초기화
 				} else if (deviation > axisPeakDeviation[i]) {
 					axisPeakDeviation[i] = deviation;
 					axisPeakValue[i] = current;
@@ -717,20 +517,8 @@ public class WheelCalibrationScreen extends Screen {
 			}
 		}
 
-		// An axis has to show motion *new since its floor was last taken* to
-		// become (or steal) a candidate - not merely be above the threshold.
-		// Applied unconditionally now, not just while a button/HAT candidate
-		// is pending: the floor is re-taken once per step (see the
-		// axisFloorStep check above), so an axis that's simply been sitting
-		// elevated since before this step began - a rotary dial/H-shifter
-		// with no spring return, left turned away from rest, whose peak
-		// deviation never resets - can't win the very first tick of a new
-		// step with zero real input. It's then raised again the moment a
-		// button/HAT candidate is captured (see snapshotAxisOverrideFloor's
-		// call sites above), so a stuck axis can't steal that candidate back
-		// either, while a pedal the player actually presses afterwards clears
-		// both floors easily - which is what makes correcting a mis-pressed
-		// button with an analog input possible.
+		// floor가 잡힌 이후 새로 생긴 움직임만 후보가 될 수 있다 - 스프링 없는 축이
+		// 단계 시작 전부터 이미 치우쳐 있어도 아무 입력 없이 새 단계를 당첨시키지 못하게 한다
 		int axisCandidate = -1;
 		float axisCandidateValue = 0f;
 		if (axisPeakDeviation != null) {
@@ -753,20 +541,14 @@ public class WheelCalibrationScreen extends Screen {
 			binding.axisIndex = axisCandidate;
 			binding.axisReleased = axisBaseline[axisCandidate];
 			binding.axisPressed = axisCandidateValue;
-			// Not added to claimedAxes yet - only once actually confirmed
-			// (see confirmPendingBinding()), so an axis that's detected but
-			// then skipped/replaced by a different candidate doesn't stay
-			// permanently excluded for nothing.
+			// 확정되기 전엔 claimedAxes에 안 넣는다 - 감지만 되고 스킵/교체되면 영구 제외되면 안 된다
 			pendingBinding = binding;
 			awaitingConfirm = true;
 		}
 	}
 
-	/**
-	 * Records where every axis's peak deviation already stood as a button/HAT
-	 * candidate is captured, so a later axis press is judged on how much it
-	 * moved *after* that point rather than on its absolute reading.
-	 */
+	// 버튼/HAT 후보가 잡힌 시점의 축별 최대 편차를 기록해서, 이후 축 입력은 그 시점
+	// 이후로 얼마나 움직였는지로 판단하게 한다
 	private void snapshotAxisOverrideFloor() {
 		if (axisPeakDeviation == null) {
 			axisOverrideFloor = null;
@@ -775,7 +557,7 @@ public class WheelCalibrationScreen extends Screen {
 		axisOverrideFloor = axisPeakDeviation.clone();
 	}
 
-	/** Player clicked [확인] while a candidate was pending - finalize it. */
+	// 대기 중인 후보를 [확인]으로 최종 확정한다
 	private void confirmPendingBinding() {
 		if (!awaitingConfirm || pendingBinding == null) return;
 		InputBinding binding = pendingBinding;
@@ -787,7 +569,6 @@ public class WheelCalibrationScreen extends Screen {
 		assignAndAdvance(binding);
 	}
 
-	/** Human-readable description of a captured control, for the confirm prompt. */
 	private String describeBinding(InputBinding b) {
 		if (b.buttonIndex >= 0) return (b.buttonIndex + 1) + "번 버튼";
 		if (b.hatIndex >= 0) return (b.hatIndex + 1) + "번 방향 버튼 (" + hatDirectionName(b.hatDirection) + ")";
@@ -795,7 +576,6 @@ public class WheelCalibrationScreen extends Screen {
 		return "";
 	}
 
-	/** Korean label for whichever function {@code s} captures a button for - used to name a conflicting field in the duplicate-binding warning below, and to exclude a step's own (not-yet-overwritten) field from matching itself. */
 	private static String buttonFieldName(Step s) {
 		return switch (s) {
 			case GEAR_DOWN_BUTTON -> "기어 다운";
@@ -814,7 +594,7 @@ public class WheelCalibrationScreen extends Screen {
 		};
 	}
 
-	/** Same physical control (button index, or HAT index+direction, or axis index) - unbound (-1) never matches anything, including another unbound binding. */
+	// 같은 물리 컨트롤인지 비교 (미배정(-1)은 서로 절대 매칭되지 않는다)
 	private static boolean sameControl(InputBinding a, InputBinding b) {
 		if (a.buttonIndex >= 0) return a.buttonIndex == b.buttonIndex;
 		if (a.hatIndex >= 0) return a.hatIndex == b.hatIndex && a.hatDirection == b.hatDirection;
@@ -822,16 +602,8 @@ public class WheelCalibrationScreen extends Screen {
 		return false;
 	}
 
-	/**
-	 * Whether {@code candidate} is already bound to a *different* function -
-	 * checked against every working field, not just ones this wizard session
-	 * has already visited: ensureProfile() seeds all 12 fields from the
-	 * previously saved profile up front, so a not-yet-visited step's field
-	 * still holds its old saved binding, and that binding survives into the
-	 * final profile for any step the player skips. Excludes the current
-	 * step's own field so re-picking the same input for the same function
-	 * isn't flagged as a conflict with itself.
-	 */
+	// candidate가 이미 다른 기능에 배정돼 있는지 - 이번 세션에서 아직 안 지나간 단계의
+	// 필드도 저장된 값을 그대로 갖고 있으므로 전부 검사한다 (현재 단계 자신은 제외)
 	private String findDuplicateFieldName(InputBinding candidate) {
 		String currentField = buttonFieldName(step);
 		record Slot(String name, InputBinding binding) {
@@ -908,23 +680,14 @@ public class WheelCalibrationScreen extends Screen {
 	private void selectLockRange(float degrees) {
 		desiredLockDeg = degrees;
 		computeSteerFields();
-		// Persist as soon as this group is actually done, not just at the
-		// wizard's very final DONE - in FULL scope this doesn't reach DONE
-		// yet (it chains into pedals/buttons next), and without this a player
-		// who calibrates the wheel, then the pedals, then quits before also
-		// remapping every button loses everything they just did, since
-		// nothing had ever hit disk.
+		// 위저드 끝이 아니라 이 그룹이 끝나는 즉시 저장한다 - 안 그러면 휠만 보정하고
+		// 버튼은 안 끝낸 채로 나갈 때 아무것도 저장되지 않는다
 		persistProgress();
 		goTo(afterWheelGroup());
 	}
 
-	/**
-	 * Leaves whatever binding is already sitting in the field for this step
-	 * untouched (seeded in ensureProfile() from the existing saved profile,
-	 * or blank if there was none) and just advances - so skipping a step
-	 * during a partial BUTTONS_ONLY re-run keeps that control's previous
-	 * mapping instead of unbinding it.
-	 */
+	// 이 단계의 필드에 이미 있던 값(ensureProfile()이 저장된 프로필에서 시드해둠)을
+	// 그대로 두고 넘어간다 - BUTTONS_ONLY 재실행 중 건너뛴 컨트롤이 매핑 해제되지 않게 한다
 	private void skipCurrentStep() {
 		pendingBinding = null;
 		awaitingConfirm = false;
@@ -950,12 +713,8 @@ public class WheelCalibrationScreen extends Screen {
 		}
 	}
 
-	/**
-	 * Prefers whatever device {@link WheelInput} already recognizes as the
-	 * calibrated wheel, rather than just SDL's first enumerated device -
-	 * with a gamepad/HOTAS/etc. enumerated before the wheel, "first
-	 * present" would silently (re-)calibrate the wrong device.
-	 */
+	// WheelInput이 이미 인식하는 계산된 휠을 우선한다 - 안 그러면 게임패드가 먼저
+	// 열거될 때 엉뚱한 장치를 (재)보정하게 된다
 	private String findFirstDeviceGuid() {
 		if (WheelInput.activeGuid != null) {
 			return WheelInput.activeGuid;
@@ -964,20 +723,8 @@ public class WheelCalibrationScreen extends Screen {
 		return count > 0 ? SdlJoystickReader.deviceGuid(0) : null;
 	}
 
-	/**
-	 * Called from a device button on the INTRO step (see init()) - overrides
-	 * whatever {@link #findFirstDeviceGuid()} auto-picked, so the wizard can
-	 * still target a second/different device even after some other one has
-	 * already been calibrated once (findFirstDeviceGuid() otherwise always
-	 * prefers WheelInput.activeGuid). Clearing profile forces ensureProfile()
-	 * to reload it (and the button-mapping working fields) for the newly
-	 * selected device on the very next tick.
-	 *
-	 * Only marks the device as chosen - [다음] is what actually starts the
-	 * wizard - so a misclick on the wrong wheel can be corrected before
-	 * committing to a whole calibration run. rebuildWidgets() re-runs init() so
-	 * the [선택됨] marker moves to the newly picked button.
-	 */
+	// INTRO 단계의 장치 버튼에서 호출됨 - findFirstDeviceGuid()의 자동 선택을 덮어써서
+	// 이미 보정된 장치가 있어도 다른 장치를 고를 수 있게 한다. [다음]을 눌러야 실제로 시작된다
 	private void selectDevice(String guid) {
 		if (guid == null || guid.equalsIgnoreCase(selectedGuid)) return;
 		selectedGuid = guid;
@@ -987,17 +734,8 @@ public class WheelCalibrationScreen extends Screen {
 		rebuildWidgets();
 	}
 
-	/**
-	 * Picks a device (preferring whatever {@link WheelInput} already
-	 * recognizes as the calibrated wheel, rather than just SDL's first
-	 * enumerated one - with a gamepad/HOTAS/etc. enumerated before the
-	 * wheel, "first present" would silently (re-)calibrate the wrong
-	 * device) and opens its SDL handle. Called every tick, not just once:
-	 * if SDL hadn't finished enumerating this device the first time this
-	 * ran (hotplug-detection lag right as the wizard opened), nothing would
-	 * otherwise ever retry it and input would silently never work for the
-	 * rest of this calibration session.
-	 */
+	// 장치를 고르고(WheelInput이 이미 인식하는 걸 우선) SDL 핸들을 연다.
+	// 매 틱 재시도해야 위저드가 열리자마자의 열거 지연도 커버된다
 	private void ensureDeviceSelected() {
 		if (selectedGuid == null) {
 			selectedGuid = findFirstDeviceGuid();
@@ -1020,16 +758,9 @@ public class WheelCalibrationScreen extends Screen {
 
 		switch (step) {
 			case INTRO -> {
-				// Advancing past INTRO on this device is an unambiguous "I want
-				// to calibrate this one now" - whether selectedGuid got here via
-				// an explicit device-button click or findFirstDeviceGuid()'s
-				// auto-pick, this is the actual commitment point, not the
-				// device-button click alone (the common single-device case never
-				// clicks one at all). Clears a stale decline from a past
-				// abandoned wizard so a device the player is now actively
-				// working through isn't left permanently opted out of the
-				// auto-prompt just because it isn't driveable yet - see
-				// WheelConfig.clearAutoCalibrationDecline()'s own doc comment.
+				// INTRO를 넘어간다는 건 이 장치를 지금 보정하겠다는 확실한 의사표시다.
+				// 예전에 중단된 위저드의 거부 표시를 여기서 지워서, 지금 실제로
+				// 작업 중인 장치가 계속 자동 안내 대상에서 빠져있지 않게 한다
 				WheelConfig.clearAutoCalibrationDecline(selectedGuid);
 				step = afterIntro();
 			}
@@ -1064,8 +795,6 @@ public class WheelCalibrationScreen extends Screen {
 			case BRAKE_DOWN -> {
 				brakeDownSnap = snapshot();
 				computePedalFields();
-				// See selectLockRange()'s comment - same reasoning for the
-				// pedal group.
 				persistProgress();
 				goTo(afterPedalGroup());
 			}
@@ -1075,34 +804,23 @@ public class WheelCalibrationScreen extends Screen {
 		}
 	}
 
-	/** Loads the profile already saved for this device (if any) so a partial re-calibration doesn't wipe the rest. */
+	// 이 장치에 이미 저장된 프로필을 불러와서, 부분 재보정이 나머지를 지우지 않게 한다
 	private void ensureProfile() {
 		if (!SdlJoystickReader.isOpen()) return;
 
 		String guid = SdlJoystickReader.openGuid();
 		if (guid == null) return;
-		// Not just "profile != null": selectDevice()/open() can race a
-		// hotplug so the reader's handle is still pointed at the previously
-		// selected device for a tick or two after selectedGuid changes -
-		// without re-checking the GUID here, a profile loaded for the old
-		// device would stay cached (and get written back to) even once the
-		// reader catches up to the newly selected one.
+		// "profile != null"만으로는 부족하다 - selectDevice()/open()이 핫플러그와
+		// 경합하면 리더 핸들이 한두 틱 동안 이전 장치를 가리킬 수 있다
 		if (profile != null && guid.equalsIgnoreCase(profile.guid)) return;
 
-		// Work on a private copy so a mid-wizard cancel can't leave the
-		// live, currently-driving profile (WheelInput.activeProfile is
-		// this same cached instance) half-updated mid-group - only a
-		// finished group (see persistProgress()/completeAndSave()) ever
-		// writes back via WheelConfig.save().
+		// 별도 복사본에서 작업한다 - 위저드 중단이 현재 주행 중인 프로필을 반쯤 건드리면 안 된다
 		WheelProfile existing = WheelConfig.get(guid);
 		profile = existing != null ? existing.copy() : new WheelProfile();
 		profile.guid = guid;
 		profile.name = SdlJoystickReader.openName();
 
-		// Seed the button-mapping working fields from whatever's already
-		// saved, so entering BUTTONS_ONLY and skipping every step leaves
-		// each binding as it was rather than clearing all 8 to unbound -
-		// computeButtonFields() below always writes all 8 from these.
+		// 버튼 매핑 작업 필드도 기존 저장값으로 시드해서, 전부 건너뛰면 그대로 유지되게 한다
 		gearDown = profile.gearDown.copy();
 		gearUp = profile.gearUp.copy();
 		booster = profile.booster.copy();
@@ -1123,12 +841,7 @@ public class WheelCalibrationScreen extends Screen {
 
 		int steerAxis = bestAxis(leftSnap, rightSnap);
 		if (steerAxis < 0) {
-			// Mirrors how computePedalFields()/skipCurrentStep() already treat a
-			// failed/skipped capture: leave whatever was already saved for this
-			// device alone rather than stamping steerAxis=-1 over a working
-			// calibration (which would make an already-driveable wheel stop
-			// steering entirely - see this method's own history for why that's
-			// the actual bug being guarded against here).
+			// 기존에 잘 작동하던 조향 설정이 있으면 그대로 두고, 없으면 계속 조향 불가능 상태로 둔다
 			boolean keptWorkingCalibration = profile.isDriveable();
 			steerCalibrationWarning = keptWorkingCalibration
 					? "조향축 인식 실패 - 기존 조향 설정을 유지합니다"
@@ -1145,24 +858,18 @@ public class WheelCalibrationScreen extends Screen {
 		WheelClientMain.LOGGER.info("Calibrated steering for {}: axis={}", profile.name, steerAxis);
 	}
 
-	/**
-	 * Uses the REF90 sample (a raw reading taken at a known, exact 90 degree
-	 * turn) to work out how many raw units correspond to one degree of
-	 * physical rotation. That lets {@code desiredLockDeg} - picked on the
-	 * lock-range screen - be converted back into raw axis values, clamped to
-	 * whatever the wheel's actual full-lock readings were (you can't ask for
-	 * more range than the hardware physically has).
-	 */
+	// REF90에서 측정한 정확히 90도 회전 값으로 raw 단위당 각도를 구하고, 그걸로
+	// 락 범위 선택 값을 raw 축 값으로 환산한다 (물리 범위를 넘어서는 못 잡는다)
 	private void applySteerRange(int steerAxis, WheelProfile profile) {
-		// centerSnap/ref90Snap are independent snapshots from earlier steps -
-		// if the device wasn't connected yet when CENTER or REF90 was
-		// advanced past (snapshot() returns an empty array with no device),
-		// they can come back shorter than leftSnap/rightSnap even for a
-		// steerAxis that bestAxis() validly picked from those two.
+		// centerSnap/ref90Snap은 각자 독립적으로 찍힌 스냅샷이라, 그 단계 때 장치가
+		// 아직 연결 안 됐으면 leftSnap/rightSnap보다 짧을 수 있다
 		if (steerAxis < 0 || centerSnap == null || steerAxis >= centerSnap.length) {
 			profile.steerCenter = 0f;
 			profile.steerLeft = -1f;
 			profile.steerRight = 1f;
+			profile.steerPhysicalLeft = -1f;
+			profile.steerPhysicalRight = 1f;
+			profile.steerRawPerDegree = 0f;
 			return;
 		}
 
@@ -1179,7 +886,7 @@ public class WheelCalibrationScreen extends Screen {
 		profile.steerRawPerDegree = rawPerDegree;
 
 		if (desiredLockDeg < 0 || rawPerDegree < 1e-6f) {
-			// No usable 90-degree reference, or the player chose "full measured lock" - use the raw extremes as-is.
+			// 90도 기준점이 없거나 "실측 풀 락 그대로"를 선택한 경우 - 실측 극값을 그대로 쓴다
 			profile.steerLeft = leftRaw;
 			profile.steerRight = rightRaw;
 			return;
@@ -1198,14 +905,8 @@ public class WheelCalibrationScreen extends Screen {
 				desiredLockDeg, rawPerDegree, leftFullRangeRaw / rawPerDegree, rightFullRangeRaw / rawPerDegree);
 	}
 
-	/**
-	 * Only overwrites the throttle/brake fields when an axis was actually
-	 * detected for that pedal - leaving them untouched (rather than
-	 * resetting to -1 / 0 / 1) when detection fails means a failed
-	 * PEDALS_ONLY re-run doesn't wipe out a previously-working calibration,
-	 * mirroring how the button-mapping steps already treat a skip (see
-	 * skipCurrentStep()'s doc comment).
-	 */
+	// 페달 축이 실제로 감지됐을 때만 필드를 덮어쓴다 - 실패한 PEDALS_ONLY 재실행이
+	// 기존에 잘 작동하던 보정을 지우지 않게 한다
 	private void computePedalFields() {
 		ensureProfile();
 		if (profile == null) return;
@@ -1217,9 +918,6 @@ public class WheelCalibrationScreen extends Screen {
 			profile.throttlePressed = throttleDownSnap[throttleAxis];
 		}
 
-		// profile.throttleAxis (not just the local throttleAxis) is excluded too - if
-		// throttle detection just above failed (-1), profile.throttleAxis still holds
-		// whatever was previously calibrated, and that axis must stay excluded here.
 		int brakeAxis = bestAxis(brakeUpSnap, brakeDownSnap, profile.steerAxis, throttleAxis, profile.throttleAxis);
 		if (brakeAxis >= 0) {
 			profile.brakeAxis = brakeAxis;
@@ -1254,40 +952,24 @@ public class WheelCalibrationScreen extends Screen {
 	private void completeAndSave() {
 		if (profile == null) return;
 		WheelConfig.save(profile);
-		// The device just (re)calibrated is what the player almost certainly
-		// wants to drive with right now - without this, a wheel that was
-		// never explicitly picked via WheelDeviceSelectScreen keeps losing to
-		// whichever calibrated+driveable device SDL happens to enumerate
-		// first (typically whichever was plugged in earliest), even if it's
-		// the one just calibrated. Harmless to set on a profile that isn't
-		// driveable yet (e.g. a BUTTONS_ONLY-only run before the wheel itself
-		// has ever been calibrated) - WheelInput.tick() only actually
-		// consults a preferred GUID for devices that pass isDriveable().
+		// 방금 (재)보정한 장치를 선호 장치로 설정한다 - 명시적으로 고른 적 없어도
+		// 방금 작업한 게 지금 몰고 싶은 휠일 가능성이 가장 크다
 		WheelConfig.setPreferredGuid(profile.guid);
 		WheelClientMain.LOGGER.info("Saved wheel profile for {}", profile.name);
 	}
 
-	/**
-	 * Writes whatever's been calibrated into {@code profile} so far, without
-	 * ending the wizard - called right after a whole group (wheel or pedals)
-	 * finishes computing its fields, so quitting mid-wizard only ever loses
-	 * an in-progress group, never groups that already finished. Safe to call
-	 * more than once per session (e.g. once after wheel, again after
-	 * pedals): each call just re-saves the same profile object with
-	 * whatever's been added to it since the last save.
-	 */
+	// 위저드를 끝내지 않고 지금까지 보정된 내용만 저장한다 - 한 그룹(휠/페달)이
+	// 끝날 때마다 호출돼서 도중에 나가도 이미 끝난 그룹은 잃지 않는다
 	private void persistProgress() {
 		if (profile == null) return;
 		WheelConfig.save(profile);
-		// See completeAndSave()'s comment - same reasoning applies to a group
-		// finishing mid-wizard, not just the wizard's very end.
 		WheelConfig.setPreferredGuid(profile.guid);
 	}
 
 	private int bestAxis(float[] a, float[] b, int... exclude) {
 		if (a == null || b == null) return -1;
 		int best = -1;
-		float bestDiff = 0.15f; // ignore noise/drift below this threshold
+		float bestDiff = 0.15f; // 노이즈/드리프트 이하는 무시
 		int len = Math.min(a.length, b.length);
 		outer:
 		for (int i = 0; i < len; i++) {
@@ -1317,20 +999,12 @@ public class WheelCalibrationScreen extends Screen {
 		}
 		int infoY = promptY + 10;
 
-		// Persists across every step for the rest of this wizard session (not
-		// just LOCK_RANGE_SELECT, where the failure is actually detected) -
-		// the player may already be onto pedals/buttons by the time they'd
-		// otherwise notice, since nothing else stops the wizard from
-		// continuing past a failed steering capture (see computeSteerFields()).
 		if (steerCalibrationWarning != null) {
 			g.drawCenteredString(font, Component.literal(steerCalibrationWarning), width / 2, infoY, 0xFF5555);
 			infoY += 10;
 		}
 
 		if (step == Step.INTRO) {
-			// Device names themselves are the selectable buttons (see init()) -
-			// only the nothing-connected case, and the case of more devices
-			// existing than got a button, need their own text line here.
 			if (SdlJoystickReader.deviceCount() == 0) {
 				g.drawCenteredString(font, Component.literal("연결된 조이스틱이 없습니다"), width / 2, infoY, 0xFF5555);
 			} else if (hiddenDeviceCount > 0) {
@@ -1340,12 +1014,8 @@ public class WheelCalibrationScreen extends Screen {
 		} else if (!SdlJoystickReader.isOpen()) {
 			g.drawCenteredString(font, Component.literal("연결된 휠 / 조이스틱이 없습니다"), width / 2, infoY, 0xFF5555);
 		} else if (isButtonCaptureStep(step)) {
-			// A raw "which buttons are currently down" dump becomes
-			// unreadable (and useless for finding one specific control) on
-			// a device that reports a huge button count, so this shows the
-			// most recent *transition* of each kind instead - one line each
-			// for button/analog/direction-button - which stays readable no
-			// matter how many inputs the device has.
+			// 버튼 수가 많은 장치에서 전체 상태를 다 보여주면 못 알아보므로,
+			// 종류별 최근 전환 한 줄씩만 보여준다
 			g.drawCenteredString(font, Component.literal("최근 버튼: " + lastButtonEventText), width / 2, infoY, 0xAAAAAA);
 			g.drawCenteredString(font, Component.literal("최근 아날로그: " + lastAxisEventText), width / 2, infoY + 10, 0xAAAAAA);
 			g.drawCenteredString(font, Component.literal("최근 방향 버튼: " + lastHatEventText), width / 2, infoY + 20, 0xFFAA55);
@@ -1364,10 +1034,7 @@ public class WheelCalibrationScreen extends Screen {
 			g.drawCenteredString(font, Component.literal("제외된 버튼: " + noisyButtons.size() + "개, 제외된 아날로그: " + noisyAxes.size() + "개"),
 					width / 2, infoY + 10, 0xFFAA55);
 		} else {
-			// Every axis's live value, one token each - can run to dozens of
-			// entries on a device with a huge analog count, so this wraps
-			// across as many centered lines as needed instead of joining
-			// everything into one line that would run off the screen edges.
+			// 축이 많은 장치에서 한 줄에 다 안 들어가므로 여러 줄로 감싸서 보여준다
 			float[] live = snapshot();
 			java.util.List<String> tokens = new java.util.ArrayList<>();
 			for (int i = 0; i < live.length; i++) {
@@ -1377,12 +1044,6 @@ public class WheelCalibrationScreen extends Screen {
 		}
 	}
 
-	/**
-	 * Packs {@code tokens} left-to-right into centered lines, starting a new
-	 * line before one would grow wider than the screen - used wherever the
-	 * number of items scales with the device's own button/axis count and so
-	 * can't be assumed to fit on one line.
-	 */
 	private void drawWrappedTokens(GuiGraphics g, java.util.List<String> tokens, int startY, int color) {
 		int maxWidth = Math.max(120, width - 20);
 		int lineHeight = 10;
@@ -1406,9 +1067,6 @@ public class WheelCalibrationScreen extends Screen {
 	private String measuredRangeSummary() {
 		int steerAxis = bestAxis(leftSnap, rightSnap);
 		if (steerAxis < 0) {
-			// Distinct from the "no 90-degree reference" case below - here
-			// LEFT/RIGHT themselves never moved far enough to identify an
-			// axis at all, so there's no range to report yet.
 			return "조향축 인식 실패 - 휠을 왼쪽/오른쪽 끝까지 충분히 돌렸는지 확인하세요";
 		}
 		if (centerSnap == null || ref90Snap == null
@@ -1453,7 +1111,7 @@ public class WheelCalibrationScreen extends Screen {
 			case LOOK_DOWN_BUTTON -> "시선 아래로 쓸 버튼(또는 남는 페달)을 누르세요\n시선이 돌아갔을 때 레이스 중에도 조정할 수 있습니다\n지정하지 않으려면 건너뛰기를 누르세요";
 
 			case CROUCH_BUTTON -> "웅크리기로 쓸 버튼(또는 남는 페달)을 누르세요\n카트에서 내리거나 레이스를 포기할 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
-			case SWAP_HANDS_BUTTON -> "양손 바꾸기로 쓸 버튼(또는 남는 페달)을 누르세요\n직접 카트에 탑승할 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
+			case SWAP_HANDS_BUTTON -> "양손 바꾸기로 쓸 버튼(또는 남는 페달)을 누르세요\n카트에 탑승하거나 위치를 리셋할 때 사용합니다\n지정하지 않으려면 건너뛰기를 누르세요";
 			case VIEW_TOGGLE_BUTTON -> "시점 전환으로 쓸 버튼(또는 남는 페달)을 누르세요\n1인칭, 2인칭, 3인칭 시점을 전환합니다\n지정하지 않으려면 건너뛰기를 누르세요";
 			case HOTBAR_SHIFT_BUTTON -> "핫바 시프트로 쓸 버튼(또는 남는 페달)을 누르세요\n아이템 슬롯을 오른쪽으로 한 칸 이동합니다\n지정하지 않으려면 건너뛰기를 누르세요";
 

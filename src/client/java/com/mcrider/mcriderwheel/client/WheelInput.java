@@ -3,54 +3,29 @@ package com.mcrider.mcriderwheel.client;
 import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.minecraft.client.Minecraft;
 
-/**
- * Runtime-normalized wheel state, computed from the raw SDL axes using
- * whatever {@link WheelProfile} was captured by {@link WheelCalibrationScreen}
- * for the currently connected device. Device enumeration and all input
- * values come from SDL (see SdlJoystickReader) - GLFW isn't used anywhere
- * in this class.
- */
+// SDL raw 축 값을 WheelProfile로 정규화한 런타임 상태. 전부 SDL 기반이고 GLFW는 안 쓴다
 public class WheelInput {
 	public static boolean available;
 	public static String activeDeviceName = "";
 	public static WheelProfile activeProfile;
 	public static String activeGuid;
-	public static float steering; // -1 (left) .. 1 (right)
+	public static float steering; // -1 (좌) .. 1 (우)
 	public static float throttle; // 0 .. 1
 	public static float brake;    // 0 .. 1
-	// 0 = wheel within the configured steering lock, 1 = at (or past) the
-	// wheel's actual physical end-stop. Only nonzero when the configured
-	// lock is narrower than the physical range, i.e. there's room to
-	// overturn past the "virtual" lock point.
+	// 0 = 설정된 락 범위 이내, 1 = 물리적 끝단. 락이 물리 범위보다 좁을 때만 0보다 커진다
 	public static float steerOverTravel;
 
-	// Same stale-until-first-moved hardware quirk WheelDrivingControl.isDown()
-	// already guards spare-axis (clutch) bindings against, applied to the
-	// throttle/brake axes it never covered: on a fresh connect some pedal
-	// hardware reports a neutral raw value until the pedal is physically moved
-	// once, which for an axis whose released end is one extreme normalizes to
-	// ~0.5 - half throttle with nobody touching anything. That PWM-taps the
-	// forward key and, worse, makes WheelDrivingControl force setSprinting(false)
-	// every tick against vanilla's own aiStep re-enabling it, so sprinting on
-	// the keyboard visibly stutters until the pedal is pressed once.
+	// 일부 페달은 재연결 직후 한 번 움직이기 전까지 어중간한 raw 값을 보고하는데
+	// 그 값이 released 쪽 극단이면 정규화 시 절반 스로틀로 읽혀서 문제가 된다
 	private static final PedalArming throttleArming = new PedalArming();
 	private static final PedalArming brakeArming = new PedalArming();
-	// GUID the arming state above belongs to, so switching wheels re-arms
-	// rather than inheriting the previous device's "already proven live" state.
+	// 위 arming 상태가 어느 GUID 것인지 - 휠을 바꾸면 다시 arm해야 한다
 	private static String armedForGuid;
 
-	/**
-	 * Holds one pedal's "has this axis ever reported real data" state. Reads 0
-	 * until either a genuinely released sample arrives (the healthy case - a
-	 * pedal at rest normalizes to ~0, so this arms on the very first tick and
-	 * changes nothing) or the raw value moves at all from where it was first
-	 * seen (which proves the device is live even if its rest reading sits
-	 * oddly high, so a drifting pedal can't get locked out permanently).
-	 */
+	// 페달 축이 "한 번이라도 실제 값을 보고했는지" 상태를 들고 있는다.
+	// released로 판정되거나, 처음 값에서 조금이라도 움직이면 armed 된다
 	private static final class PedalArming {
-		// Normalized value at or below which a pedal counts as genuinely released.
 		private static final float RELEASED_MAX = 0.1f;
-		// Raw movement that proves the axis isn't frozen, above per-tick noise.
 		private static final float LIVE_MOVE_EPSILON = 0.02f;
 
 		private int axis = -1;
@@ -65,8 +40,7 @@ public class WheelInput {
 		}
 
 		float apply(int axis, float normalized, float raw) {
-			// A recalibration can move a pedal onto a different axis without the
-			// GUID changing, and the new one hasn't proven itself yet.
+			// 재보정으로 GUID는 그대로인데 축만 바뀔 수 있다
 			if (axis != this.axis) {
 				reset();
 				this.axis = axis;
@@ -83,20 +57,9 @@ public class WheelInput {
 	}
 
 	public static void tick() {
-		// SdlJoystickReader holds only one native handle open at a time - both
-		// this method and WheelCalibrationScreen's own tick() call open() on it
-		// every client tick, for whichever GUID each currently wants. With a
-		// second (different) device being calibrated while this one is still
-		// "the" driving device, those two ticks fight over the same handle and
-		// re-open it for a different GUID 20x/sec, which has been observed to
-		// hang the game outright (Windows' DirectInput joystick layer does not
-		// appear to tolerate a handle being torn down and recreated that fast -
-		// see WheelForceFeedback's own similar findings for its haptic handle).
-		// Driving (WheelDrivingControl.tick()) and FFB output
-		// (WheelForceFeedback.tick()) are both already fully suppressed while
-		// the calibration screen is up, so freezing this class's state for that
-		// same span - rather than fighting the wizard for the handle - costs
-		// nothing real.
+		// 보정 화면이 같은 SDL 핸들을 놓고 이 메서드와 경쟁하면 초당 20번씩
+		// 다른 GUID로 재오픈하게 되어 DirectInput이 멈출 수 있다. 주행/FFB는
+		// 보정 화면이 떠있는 동안 이미 다 억제되므로 여기서도 그냥 상태를 얼려둔다
 		if (Minecraft.getInstance().screen instanceof WheelCalibrationScreen) {
 			return;
 		}
@@ -104,14 +67,8 @@ public class WheelInput {
 		available = false;
 		int count = SdlJoystickReader.deviceCount();
 
-		// Calibrated *and driveable* devices currently connected, in the order
-		// they should be tried: the player's explicitly preferred GUID (see
-		// WheelConfig.getPreferredGuid()/WheelDeviceSelectScreen) first if it's
-		// actually here, then everything else in SDL's own enumeration order -
-		// same fallback as before preference existed, just giving the preferred
-		// device first shot at it. isDriveable() keeps a profile whose steering
-		// calibration failed (steerAxis = -1) from claiming the slot and
-		// shutting out a second wheel that does work.
+		// 선호 장치를 먼저 시도하고 나머지는 SDL 열거 순서대로. isDriveable()로
+		// 조향 보정 실패한 프로필이 자리를 차지해 다른 정상 휠을 막는 걸 방지한다
 		java.util.List<String> candidates = new java.util.ArrayList<>();
 		String preferredGuid = WheelConfig.getPreferredGuid();
 		for (int i = 0; i < count; i++) {
@@ -129,9 +86,7 @@ public class WheelInput {
 		for (String guid : candidates) {
 			WheelProfile profile = WheelConfig.get(guid);
 
-			// A momentary open() failure (e.g. this tick's enumeration index
-			// raced a hotplug event) just skips this device for the tick;
-			// the retry next tick is enough to self-heal.
+			// 일시적인 open() 실패는 다음 틱 재시도로 충분히 회복된다
 			if (!SdlJoystickReader.open(guid)) continue;
 			SdlJoystickReader.update();
 
@@ -153,19 +108,8 @@ public class WheelInput {
 		}
 
 		if (!available) {
-			// Deliberately doesn't call SdlJoystickReader.close() here - unlike
-			// every other field below, that handle is a single shared static
-			// resource WheelCalibrationScreen may also have open (e.g. for a
-			// not-yet-calibrated device, which never makes it into this
-			// method's "available" branch at all). Closing it here on every
-			// tick this loop finds no *calibrated* device would rip that
-			// handle out from under an in-progress calibration.
-			//
-			// The loop above found no calibrated device this tick - clear the
-			// "active" fields along with it rather than leaving them pointing
-			// at whatever was last connected, since callers like
-			// WheelSettingsScreen's sliders read/write activeProfile directly
-			// without going through available.
+			// SdlJoystickReader.close()는 호출하지 않는다 - 보정 화면이 같은 핸들을
+			// 쓰고 있을 수 있어서 여기서 닫으면 보정 도중인 장치가 끊긴다
 			activeDeviceName = "";
 			activeProfile = null;
 			activeGuid = null;
@@ -173,12 +117,18 @@ public class WheelInput {
 			throttle = 0f;
 			brake = 0f;
 			steerOverTravel = 0f;
-			// A reconnect is exactly when the stale-value quirk shows up again,
-			// so don't carry "already proven live" across a disconnect.
 			throttleArming.reset();
 			brakeArming.reset();
 			armedForGuid = null;
 		}
+	}
+
+	// tick()이 20Hz로 캐시한 steering 대신 SDL 축을 즉시 다시 읽는다
+	// (WheelDrivingControl.tickRotation()이 프레임마다 호출)
+	public static float steeringNow() {
+		if (!available || activeProfile == null) return 0f;
+		SdlJoystickReader.update();
+		return mapSteer(activeProfile);
 	}
 
 	private static float mapSteer(WheelProfile p) {
@@ -194,28 +144,18 @@ public class WheelInput {
 		}
 	}
 
-	/**
-	 * Which captured lock (steerRight vs steerLeft) the raw reading {@code v}
-	 * is actually closer to. Not "v >= steerCenter": that assumes steerRight
-	 * always sits on the raw-increasing side of center, which is only true
-	 * for a "normal" axis polarity. On a reversed axis (turning right
-	 * decreases the raw value), steerRight is captured *below* center, so
-	 * "v >= c" would misroute a genuine right turn into the left-lock's span
-	 * - same sign by coincidence (both span and diff flip together), but the
-	 * wrong span's magnitude, which is wrong whenever the two locks aren't
-	 * symmetric. Comparing raw distance to each captured extreme instead is
-	 * polarity-agnostic.
-	 */
+	// v가 steerCenter 기준으로 steerRight와 같은 쪽에 있는지 판정한다.
+	// steerCenter가 두 락의 정중앙이 아닐 수도 있어서, 부호를 곱해서 판정한다
+	// (거리 비교 방식은 축 극성엔 안전하지만 경계가 steerCenter가 아니라 중점이 되어
+	// 비대칭 보정에서 mapSteer() 출력이 불연속으로 튈 수 있었다)
 	private static boolean isTowardRight(float v, WheelProfile p) {
-		return Math.abs(v - p.steerRight) <= Math.abs(v - p.steerLeft);
+		return (v - p.steerCenter) * (p.steerRight - p.steerCenter) >= 0f;
 	}
 
-	// The soft-lock "wall" reaches full strength this many degrees past the
-	// configured lock, not spread across whatever's left of the physical
-	// range - a 90 degree lock on a 900 degree wheel should feel like a
-	// hard stop right at 90, not a force that only maxes out near 900.
+	// 소프트락 벽은 설정된 락 이후 이 각도만큼에서 최대 강도에 도달한다
+	// (남은 물리 범위 전체에 걸쳐 서서히 세지는 게 아니라 락 지점에서 바로 세져야 벽처럼 느껴진다)
 	private static final float WALL_WIDTH_DEG = 8f;
-	private static final float DEFAULT_WALL_WIDTH_RAW = 0.05f; // fallback when steerRawPerDegree is unknown
+	private static final float DEFAULT_WALL_WIDTH_RAW = 0.05f; // steerRawPerDegree를 모를 때 폴백
 
 	private static float computeOverTravel(WheelProfile p) {
 		if (p.steerAxis < 0 || p.steerAxis >= SdlJoystickReader.axisCount()) return 0f;
@@ -232,7 +172,7 @@ public class WheelInput {
 		}
 		float travel = Math.abs(v - c);
 		float overRange = physRaw - lockRaw;
-		if (overRange < 1e-4f) return 0f; // configured lock already is the physical limit - no room to overturn
+		if (overRange < 1e-4f) return 0f; // 설정된 락이 이미 물리적 한계라 더 돌 여지가 없음
 
 		float wallWidth = p.steerRawPerDegree > 1e-6f ? WALL_WIDTH_DEG * p.steerRawPerDegree : DEFAULT_WALL_WIDTH_RAW;
 		wallWidth = Math.min(wallWidth, overRange);

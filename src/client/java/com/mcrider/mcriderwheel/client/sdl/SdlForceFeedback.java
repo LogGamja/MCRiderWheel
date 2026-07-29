@@ -15,27 +15,11 @@ import io.github.libsdl4j.api.haptic.effect.SDL_HapticPeriodic;
 import io.github.libsdl4j.api.joystick.SDL_Joystick;
 import io.github.libsdl4j.api.joystick.SdlJoystick;
 
-/**
- * Java port of what used to be native/src/mcrider_ffb.c, a hand-written C
- * shim called through a JNA interface (FfbNative/FfbNativeLoader) - this
- * class replaced that whole path with direct libsdl4j calls (ControllableSDL
- * was tried first and dropped - see build.gradle) - same SDL2 functions,
- * same effect setup, just no native/ build step (and no MinGW toolchain /
- * Windows-only build script) needed anymore. Confirmed working end-to-end on
- * real hardware; the old C file and its JNA interface have since been
- * deleted.
- *
- * This mirrors the deleted C file's function-for-function, handle-slot-array
- * design deliberately, not just its net effect: every comment below about
- * *why* a particular field is (or isn't) set reflects something that
- * version got right only after real-hardware testing - values were carried
- * over as-is rather than "cleaned up".
- *
- * WheelForceFeedback.java's crash-avoidance state machine (enable delay,
- * pulse cooldown, nativeFaulted latch, focus-regain reacquire) lives entirely
- * in that class and is unchanged by this port - this class only replaces
- * what used to be native calls.
- */
+// 예전 native/mcrider_ffb.c(JNA 연동)를 libsdl4j 직접 호출로 대체한 클래스.
+// 핸들 슬롯 배열 구조와 값 설정 방식을 그대로 유지했다 - 각 필드가 왜 그렇게
+// 설정됐는지는 실제 하드웨어 테스트로 확인된 내용이라 "정리"하지 않고 그대로 옮겼다.
+// 크래시 방지 로직(enable 지연, pulse 쿨다운, nativeFaulted 등)은 WheelForceFeedback에 있고
+// 이 클래스는 네이티브 호출부만 담당한다
 public final class SdlForceFeedback {
 	private static final int MAX_HANDLES = 16;
 
@@ -44,16 +28,8 @@ public final class SdlForceFeedback {
 		SDL_Haptic haptic;
 		int effectId = -1;
 		int pulseEffectId = -1;
-		// Reused across calls instead of `new`-ing a fresh Structure/Union each
-		// time - mcrider_ffb_set_force() is called every client tick for as
-		// long as FFB is enabled (so 20/sec for the length of a whole race),
-		// making it by far the hottest JNA-marshaled native-memory allocation
-		// site in the mod. Mutating the same instances' fields in place is
-		// both the standard JNA-reuse idiom and removes that allocation churn
-		// as a variable when chasing the kind of delayed native-heap-
-		// corruption crash (a VM-internal frame, not a crash right at an SDL
-		// call site) this class's own comments have already run into more
-		// than once on this exact SDL2/DirectInput stack.
+		// mcrider_ffb_set_force()가 레이스 내내 초당 20번 불리므로, 매번 새로
+		// 만들지 않고 같은 인스턴스를 재사용해서 JNA 네이티브 메모리 할당 churn을 줄인다
 		SDL_HapticDirection forceDirection;
 		SDL_HapticConstant forceConstant;
 		SDL_HapticEffect forceEffect;
@@ -78,7 +54,7 @@ public final class SdlForceFeedback {
 		return lastError;
 	}
 
-	/** Bitmask from SDL_HapticQuery - which effect types + gain/autocenter support the device reports. 0 if the handle is invalid. */
+	// SDL_HapticQuery 비트마스크. 핸들이 잘못됐으면 0
 	public static int mcrider_ffb_query(int handle) {
 		Handle h = handleAt(handle);
 		return h != null && h.haptic != null ? SdlHaptic.SDL_HapticQuery(h.haptic) : 0;
@@ -122,15 +98,8 @@ public final class SdlForceFeedback {
 		}
 	}
 
-	/**
-	 * Null if the index isn't currently a real device - see
-	 * SdlJoystickReader.deviceGuid() for why a stale index here is a
-	 * JVM-killing access violation rather than a benign miss. The GUID
-	 * struct itself is decoded via SdlJoystickReader.formatJoystickGuid()
-	 * rather than SDL_JoystickGetGUIDString - see that method's own doc
-	 * comment for the separate by-value-marshalling crash that call was
-	 * confirmed to cause.
-	 */
+	// 오래된 인덱스로 GUID를 조회하면 JVM이 죽으므로 GUID 구조체는
+	// SdlJoystickReader.formatJoystickGuid()로 직접 조립한다
 	public static String mcrider_ffb_device_guid(int index) {
 		if (!isValidDeviceIndex(index)) return null;
 		try {
@@ -149,7 +118,7 @@ public final class SdlForceFeedback {
 		}
 	}
 
-	/** Opens the joystick at `index` for force feedback. Returns a handle (>= 0), or -1 if the device has no force feedback support. */
+	// 장치의 힘 피드백 핸들을 연다. 성공하면 핸들(>= 0), 힘 피드백 미지원이면 -1
 	public static int mcrider_ffb_open(int index) {
 		if (!initialized) return -1;
 
@@ -162,59 +131,56 @@ public final class SdlForceFeedback {
 		}
 		if (slot < 0) return -1;
 
-		SDL_Joystick joystick = SdlJoystick.SDL_JoystickOpen(index);
+		SDL_Joystick joystick;
+		try {
+			joystick = SdlJoystick.SDL_JoystickOpen(index);
+		} catch (Throwable t) {
+			captureError();
+			return -1;
+		}
 		if (joystick == null) {
 			captureError();
 			return -1;
 		}
 
-		SDL_Haptic haptic = SdlHaptic.SDL_HapticOpenFromJoystick(joystick);
-		if (haptic == null) {
+		// 이 아래에서 예외가 나면 위에서 연 joystick 핸들을 반드시 닫아야 새는 게 없다
+		try {
+			SDL_Haptic haptic = SdlHaptic.SDL_HapticOpenFromJoystick(joystick);
+			if (haptic == null) {
+				captureError();
+				SdlJoystick.SDL_JoystickClose(joystick);
+				return -1;
+			}
+
+			// 휠 자체의 센터링 스프링을 꺼서 Java 쪽 센터링과 안 싸우게 함, 실패해도 무시
+			SdlHaptic.SDL_HapticSetAutocenter(haptic, 0);
+			// gain은 건드리지 않음, 제조사 컨트롤 패널 설정과 충돌하는 걸 실측으로 확인함
+
+			Handle h = new Handle();
+			h.joystick = joystick;
+			h.haptic = haptic;
+			handles[slot] = h;
+			return slot;
+		} catch (Throwable t) {
 			captureError();
 			SdlJoystick.SDL_JoystickClose(joystick);
 			return -1;
 		}
-
-		// Disable the wheel's own on-device centering spring so it doesn't
-		// fight the centering effect rendered from Java - one-shot setup,
-		// not re-asserted per-tick (see mcrider_ffb_set_force). Best-effort:
-		// ignore failure, not every device supports it.
-		SdlHaptic.SDL_HapticSetAutocenter(haptic, 0);
-		// Deliberately does NOT touch gain (SDL_HapticSetGain): it's a
-		// device-global setting shared with the wheel's own vendor control
-		// panel, and forcing it here was confirmed by testing to fight the
-		// user's own setting without fixing anything.
-
-		Handle h = new Handle();
-		h.joystick = joystick;
-		h.haptic = haptic;
-		handles[slot] = h;
-		return slot;
 	}
 
-	/**
-	 * Sets/updates a continuously running constant-force effect.
-	 * magnitude: 0.0 .. 1.0 (fraction of the device's max force)
-	 * directionDeg: 0..359, SDL polar convention (0 = "north" / away from the player)
-	 */
+	// 지속적인 constant-force 이펙트를 설정/갱신한다
+	// magnitude: 0.0 .. 1.0, directionDeg: 0..359 (SDL polar, 0 = 플레이어 반대쪽)
 	public static int mcrider_ffb_set_force(int handle, float magnitude, float directionDeg) {
 		Handle h = handleAt(handle);
 		if (h == null || h.haptic == null) return -1;
 
 		magnitude = Math.max(0f, Math.min(1f, magnitude));
 
-		// Wheels report a single force-feedback axis, and DirectInput's
-		// CreateEffect rejects SDL_HAPTIC_POLAR directions on single-axis
-		// devices (SDL's polar->cartesian conversion produces more direction
-		// components than the device has axes). SDL_HAPTIC_CARTESIAN with a
-		// fixed unit direction and a signed level is the combination
-		// confirmed working on single-axis wheels.
+		// 휠은 축이 하나뿐이라 DirectInput이 POLAR 방향을 거부하므로
+		// CARTESIAN + 부호 있는 레벨 조합만 단일 축 휠에서 동작하는 걸 확인했다
 		int sign = (directionDeg >= 90.0f && directionDeg < 270.0f) ? -1 : 1;
 
-		// Built once per handle and reused for every subsequent call (see the
-		// Handle field's own comment) instead of `new`-ing a fresh
-		// Structure/Union on every tick - only the one field that actually
-		// changes per-tick (constant.level) is written on the reused instance.
+		// 매 틱 바뀌는 constant.level 필드만 갱신하고 나머지 구조체는 재사용한다
 		if (h.forceDirection == null) {
 			h.forceDirection = new SDL_HapticDirection();
 			h.forceDirection.type = (byte) SDL_HapticDirectionEncoding.SDL_HAPTIC_CARTESIAN;
@@ -223,12 +189,8 @@ public final class SdlForceFeedback {
 
 		if (h.forceConstant == null) {
 			h.forceConstant = new SDL_HapticConstant();
-			// The union's own setType() below only selects which member JNA
-			// marshals - it does NOT set that member's own leading `type` field,
-			// which is what actually lands at the shared union memory offset
-			// SDL reads back to validate the effect. Leaving this unset (0)
-			// made SDL_HapticNewEffect's JNA read-back see type=0 and throw
-			// "Invalid haptic effect type: 0" - confirmed against real hardware.
+			// union의 setType()은 type 필드 자체를 안 채워서 여기서 직접 설정해야 한다
+			// (안 그러면 SDL이 "Invalid haptic effect type: 0"으로 거부하는 걸 실측으로 확인)
 			h.forceConstant.type = (short) SDL_HapticEffectType.SDL_HAPTIC_CONSTANT;
 			h.forceConstant.direction = h.forceDirection;
 			h.forceConstant.length = SdlHapticConst.SDL_HAPTIC_INFINITY;
@@ -254,15 +216,9 @@ public final class SdlForceFeedback {
 			}
 		}
 
-		// DirectInput can silently stop actually playing an effect (device
-		// re-enumeration, exclusive-access hiccups, losing/regaining focus)
-		// while SDL_HapticUpdateEffect above keeps reporting success anyway,
-		// since it only rewrites the effect's parameters - it never confirms
-		// playback is still live. Re-asserting playback here (only when the
-		// device itself reports "not playing") is what makes that
-		// self-healing without needlessly restarting a healthy effect at
-		// the caller's tick rate. Devices without SDL_HAPTIC_STATUS return
-		// a negative status - for those, fall back to restarting every call.
+		// DirectInput이 포커스 변화 등으로 이펙트 재생을 조용히 멈출 수 있는데
+		// UpdateEffect는 파라미터만 갱신할 뿐 재생 여부를 확인하지 않으므로
+		// 재생 중이 아닐 때만 다시 Run 해서 스스로 복구되게 한다
 		int status = SdlHaptic.SDL_HapticGetEffectStatus(h.haptic, h.effectId);
 		if (status != 1) {
 			if (SdlHaptic.SDL_HapticRunEffect(h.haptic, h.effectId, 1) != 0) {
@@ -273,13 +229,7 @@ public final class SdlForceFeedback {
 		return 0;
 	}
 
-	/**
-	 * Fires a one-shot sine "kick" that the device/driver renders and times
-	 * itself. magnitude: 0.0 .. 1.0. periodMs: length of one full sine
-	 * cycle. durationMs: total pulse length (fades out over its back half).
-	 * startSign: +1 or -1, see WheelForceFeedback.pulse()'s doc comment for
-	 * why callers vary this.
-	 */
+	// 장치가 스스로 타이밍을 렌더링하는 단발성 사인파 "킥"을 발생시킨다
 	public static int mcrider_ffb_pulse(int handle, float magnitude, int periodMs, int durationMs, int startSign) {
 		Handle h = handleAt(handle);
 		if (h == null || h.haptic == null) return -1;
@@ -294,12 +244,8 @@ public final class SdlForceFeedback {
 			h.pulseEffectId = -1;
 		}
 
-		// Reused across calls like mcrider_ffb_set_force's own instances (see
-		// the Handle field's comment) - the native effect itself still gets
-		// destroyed/recreated every call above (SDL has no "update" for a
-		// one-shot periodic effect's timing fields the way it does for the
-		// constant effect), but the Java-side Structure/Union objects handed
-		// to that create call don't need to be fresh too.
+		// 네이티브 이펙트는 매번 새로 만들지만 (SDL에 단발 periodic 이펙트용 update가 없다)
+		// Java 쪽 구조체 객체는 재사용한다
 		if (h.pulseDirectionObj == null) {
 			h.pulseDirectionObj = new SDL_HapticDirection();
 			h.pulseDirectionObj.type = (byte) SDL_HapticDirectionEncoding.SDL_HAPTIC_CARTESIAN;
@@ -308,9 +254,7 @@ public final class SdlForceFeedback {
 
 		if (h.pulsePeriodicObj == null) {
 			h.pulsePeriodicObj = new SDL_HapticPeriodic();
-			// See mcrider_ffb_set_force's comment - the member struct's own
-			// `type` field has to be set explicitly, effect.setType() alone
-			// isn't enough.
+			// 여기도 type 필드를 직접 설정해야 한다 (mcrider_ffb_set_force와 동일한 이유)
 			h.pulsePeriodicObj.type = (short) SDL_HapticEffectType.SDL_HAPTIC_SINE;
 			h.pulsePeriodicObj.direction = h.pulseDirectionObj;
 			h.pulsePeriodicObj.fadeLevel = 0;
@@ -339,15 +283,9 @@ public final class SdlForceFeedback {
 		return 0;
 	}
 
-	/**
-	 * Explicitly Stop()s then Run()s the centering effect already in place,
-	 * regardless of what SDL_HapticGetEffectStatus claims - this is the
-	 * actual fix for force feedback silently dying after roughly a minute
-	 * (see WheelForceFeedback's own comment on this for the dedicated
-	 * hardware testing that confirmed it); a firmware/driver-level
-	 * max-continuous-output cutoff that in-place SDL_HapticUpdateEffect
-	 * calls don't reset.
-	 */
+	// 상태 조회와 무관하게 강제로 Stop 후 Run 한다 - 약 60~70초 후 힘 피드백이
+	// 조용히 죽는 문제의 실제 해결책으로, UpdateEffect만으로는 리셋되지 않는
+	// 펌웨어/드라이버 수준의 연속 출력 컷오프로 추정된다 (실측으로 확인)
 	public static int mcrider_ffb_restart_effect(int handle) {
 		Handle h = handleAt(handle);
 		if (h == null || h.haptic == null || h.effectId < 0) return -1;

@@ -9,43 +9,17 @@ import io.github.libsdl4j.api.joystick.SDL_JoystickGUID;
 import io.github.libsdl4j.api.joystick.SdlJoystick;
 import io.github.libsdl4j.api.joystick.SdlJoystickConst;
 
-/**
- * Reads device enumeration, button, axis, and hat state via SDL2
- * (SDL_Joystick) - this is now the sole source of joystick I/O for the
- * wheel subsystem, replacing GLFW entirely. Buttons moved here first, to
- * fix GLFW's Windows DirectInput backend misreporting buttons past index 32
- * on devices with large button counts - confirmed against this project's
- * own hardware via raw-HID-level logging that showed the device itself is
- * stable and the corruption happens in GLFW/DirectInput's parsing layer.
- * Axes/hats/enumeration were never observed to have that specific bug, but
- * were moved over anyway for one consistent input path instead of splitting
- * reads of the same physical device across two libraries.
- *
- * Axis values are normalized the same way GLFW's were (roughly -1.0..1.0,
- * from SDL's raw Sint16 range via /32767). WheelProfile.guid is now an SDL
- * GUID string rather than a GLFW one, and calibration is captured and
- * played back entirely through this class, so both are self-consistent -
- * but this is a clean break from any GLFW-calibrated profile saved before
- * this change; recalibration is expected, not a bug.
- */
+// GLFW 대신 SDL2로 조이스틱 열거/버튼/축/HAT을 읽는다.
+// GLFW의 Windows DirectInput 백엔드가 32번 이상 버튼을 오독하는 문제를 피하기 위함.
+// 축 값은 GLFW와 같은 방식으로 -1.0..1.0 정도로 정규화된다 (SDL Sint16 / 32767)
 public final class SdlJoystickReader {
 	private static boolean sdlInitialized;
-	// Set once an SDL_Init() call has failed and been logged, so a device
-	// count/open() being retried every tick while it keeps failing (see
-	// ensureSdlInit()) doesn't also spam the log/chat every tick - only the
-	// first failure is reported, the retries themselves stay silent.
+	// SDL_Init() 실패를 한 번만 로그 남기기 위한 플래그
 	private static boolean sdlInitFailureLogged;
 	private static SDL_Joystick openJoystick;
 	private static String openGuid;
-	// checkConnections()/WheelInput.tick() each call into this class several
-	// times per client tick (deviceCount(), open(), update()) - until now
-	// every one of those issued its own native SDL_JoystickUpdate() (a full
-	// DirectInput poll), so a single tick fired 3-4 redundant polls back to
-	// back with no other work between them. Debouncing by a few ms - well
-	// under a client tick (50ms) and well over the sub-millisecond gap
-	// between these same-tick calls - collapses them into one real poll per
-	// tick without every call site needing to track tick boundaries itself,
-	// while still guaranteeing a genuinely fresh poll by the next tick.
+	// deviceCount()/open()/update() 여러 곳에서 매 틱 몇 번씩 호출되므로
+	// 실제 네이티브 폴은 몇 ms 단위로만 갱신되게 디바운스한다
 	private static long lastNativeUpdateNanos = Long.MIN_VALUE / 2;
 	private static final long UPDATE_DEBOUNCE_NANOS = 5_000_000L; // 5ms
 
@@ -61,17 +35,7 @@ public final class SdlJoystickReader {
 	private SdlJoystickReader() {
 	}
 
-	/**
-	 * Returns whether the joystick subsystem is actually initialized.
-	 * Previously this latched sdlInitialized = true unconditionally after
-	 * calling SDL_Init(), regardless of its return value - a failed init
-	 * (missing/broken SDL2 native library, platform joystick backend
-	 * unavailable, etc.) was never retried and every device query silently
-	 * reported "0 devices" forever with no error logged anywhere. Not
-	 * latching on failure lets deviceCount()/open() - both called every
-	 * client tick - keep retrying, the same self-healing approach already
-	 * used for a momentary per-device open() failure in WheelInput.tick().
-	 */
+	// 초기화 실패해도 latch하지 않고 다음 틱에 재시도한다
 	private static boolean ensureSdlInit() {
 		if (sdlInitialized) return true;
 		try {
@@ -83,13 +47,6 @@ public final class SdlJoystickReader {
 				return false;
 			}
 		} catch (Throwable t) {
-			// A missing/corrupt native SDL2 library surfaces here as a JNA
-			// load-time error (e.g. UnsatisfiedLinkError), not the kind of
-			// stale-handle/stale-index access violation the rest of this
-			// class's try/catches are guarding against - but this call is
-			// retried every tick same as those, so it needs the same
-			// "don't let a Java-catchable failure take the client tick down
-			// with it" treatment.
 			if (!sdlInitFailureLogged) {
 				sdlInitFailureLogged = true;
 				WheelClientMain.LOGGER.error("[Wheel] failed to load/initialize SDL2", t);
@@ -100,31 +57,15 @@ public final class SdlJoystickReader {
 		return true;
 	}
 
-	/**
-	 * Opens the joystick whose SDL GUID string matches {@code guid}, unless
-	 * a handle for that same GUID is already open. Closes any previously
-	 * open (different) device first. Returns false if no matching device is
-	 * currently present or the open call failed.
-	 */
+	// guid와 일치하는 조이스틱을 연다. 이미 같은 GUID가 열려 있으면 재사용한다
 	public static boolean open(String guid) {
 		if (guid == null || !ensureSdlInit()) return false;
 		try {
-			// Refreshed here (not just relying on the caller's own per-tick
-			// update()) so SDL_JoystickGetAttached below reflects a disconnect
-			// that happened since the last update() call, not stale state.
 			pollIfStale();
 			if (openJoystick != null && guid.equalsIgnoreCase(openGuid)) {
-				// A same-GUID fast path alone can't tell "still the same live
-				// device" apart from "this GUID was unplugged and replugged" -
-				// SDL doesn't null out our handle on disconnect, so without this
-				// check a replug would leave open() forever reusing a dead
-				// handle instead of ever reopening the reconnected device.
+				// SDL은 연결이 끊겨도 핸들을 null로 만들어주지 않으므로 attached 여부를 직접 확인한다
 				if (SdlJoystick.SDL_JoystickGetAttached(openJoystick)) return true;
 			}
-			// Scan via deviceGuid() (index-revalidated, try/caught) rather than a
-			// raw SDL_JoystickGetDeviceGUID/SDL_JoystickGetGUIDString pair - see
-			// that method's doc comment for the JVM-killing access violation a
-			// stale index causes there.
 			int index = -1;
 			int count = SdlJoystick.SDL_NumJoysticks();
 			for (int i = 0; i < count; i++) {
@@ -135,19 +76,10 @@ public final class SdlJoystickReader {
 			}
 			if (index < 0) return false;
 
-			// Open the new handle *before* closing the old one, not after -
-			// SDL_JoystickOpen tolerates a since-gone index fine (confirmed:
-			// returns null rather than crashing, twice now), so there's no need
-			// to re-verify its result via another native GUID query. An earlier
-			// version of this method tried exactly that re-verification -
-			// SDL_JoystickGetGUID(handle) followed by SDL_JoystickGetGUIDString -
-			// and that crashed the JVM too (EXCEPTION_ACCESS_VIOLATION), even
-			// though the handle itself was a valid, just-opened, non-null
-			// SDL_Joystick. So: no GUID query on a live handle, ever, in this
-			// environment - deviceGuid()'s index-based query is the only one
-			// that's held up under testing. Briefly holding both the old and new
-			// handles open across this call is fine - SdlForceFeedback already
-			// does exactly that with its own separate handle to the same device.
+			// 새 핸들을 먼저 열고 나서 옛것을 닫는다. SDL_JoystickOpen(index)에 유효하지
+			// 않은 인덱스를 넘겨도 크래시 없이 null만 반환하는 걸 확인했으므로 문제 없다.
+			// 반대로 열린 핸들에 GUID 재조회를 한 번 더 하면 JVM이 죽는 걸 확인해서
+			// 여기서는 절대 그렇게 하지 않는다
 			SDL_Joystick opened = SdlJoystick.SDL_JoystickOpen(index);
 			if (opened == null) return false;
 			close();
@@ -176,12 +108,10 @@ public final class SdlJoystickReader {
 		return openJoystick != null;
 	}
 
-	/** GUID of the currently open device, or null if none is open. */
 	public static String openGuid() {
 		return openGuid;
 	}
 
-	/** Name of the currently open device, or "" if none is open. */
 	public static String openName() {
 		if (openJoystick == null) return "";
 		try {
@@ -192,14 +122,12 @@ public final class SdlJoystickReader {
 		}
 	}
 
-	/** Number of joystick devices SDL currently sees, present or not (not just the one this class has open). */
 	public static int deviceCount() {
 		if (!ensureSdlInit()) return 0;
 		pollIfStale();
 		return SdlJoystick.SDL_NumJoysticks();
 	}
 
-	/** Name of the device at enumeration index {@code index} (0..deviceCount()-1), without opening it. Empty if the index is no longer valid. */
 	public static String deviceName(int index) {
 		if (!isValidDeviceIndex(index)) return "";
 		try {
@@ -210,24 +138,11 @@ public final class SdlJoystickReader {
 		}
 	}
 
-	/**
-	 * GUID string of the device at enumeration index {@code index}, without
-	 * opening it, or null if that index isn't currently a real device.
-	 *
-	 * The index is re-validated against a live SDL_NumJoysticks() rather than
-	 * trusted from whatever count the caller looped on: SDL re-enumerates
-	 * whenever devices are opened/closed (which this mod does on wheel
-	 * switches, calibration, and FFB reacquire), so an index that was valid
-	 * when the loop started can be stale by the time it's read. Handing such an
-	 * index to SDL_JoystickGetDeviceGUID yields a GUID struct whose memory
-	 * SDL_JoystickGetGUIDString then walks off the end of - an
-	 * EXCEPTION_ACCESS_VIOLATION that takes the whole JVM down with no
-	 * catchable exception, confirmed from a crash in exactly this path.
-	 *
-	 * The string itself is now built by {@link #formatJoystickGuid} instead
-	 * of by SDL_JoystickGetGUIDString - see there for why that call is worth
-	 * avoiding entirely rather than merely guarding.
-	 */
+	// index 번째 장치의 GUID 문자열, 유효하지 않으면 null.
+	// 인덱스를 매번 실제 SDL_NumJoysticks()로 재검증한다 - 오래된 인덱스로
+	// SDL_JoystickGetDeviceGUID를 부르면 JVM이 죽는 걸 실제 크래시로 확인했다.
+	// 문자열 조립도 SDL_JoystickGetGUIDString 대신 formatJoystickGuid()로 직접 하는데
+	// 그 네이티브 호출 자체가 다른 크래시 원인이었기 때문
 	public static String deviceGuid(int index) {
 		if (!isValidDeviceIndex(index)) return null;
 		try {
@@ -239,28 +154,8 @@ public final class SdlJoystickReader {
 
 	private static final char[] HEX_LOWER = "0123456789abcdef".toCharArray();
 
-	/**
-	 * Builds the same 32-character lowercase hex string
-	 * SDL_JoystickGetGUIDString would return, but purely in Java.
-	 *
-	 * libsdl4j maps SDL's {@code Uint8 data[16]} as SDL_GUID's two plain
-	 * {@code long} fields (leastSigBits then mostSigBits), and a by-value
-	 * struct return has already been decoded into those Java primitives by
-	 * the time it lands here - so the hex string can be assembled from them
-	 * without handing the struct back into native code at all.
-	 *
-	 * That matters because handing it back is what crashed: a real hs_err
-	 * dump caught the fault inside jvm.dll called from jna.dll with
-	 * com.sun.jna.Structure.autoWrite in-register, faulting on address
-	 * 0x0000346ec5c30003 - which is exactly this project's own wheel's GUID
-	 * first eight bytes (03 00 c3 c5 6e 34 00 00 -> "0300c3c56e340000"),
-	 * i.e. the struct's own contents being dereferenced as a pointer during
-	 * by-value marshalling. Not calling into that path is a real fix rather
-	 * than a narrowing of the window.
-	 *
-	 * Byte order follows nativeOrder() so the bytes come back out in the same
-	 * order SDL laid them down in the struct, on any platform.
-	 */
+	// SDL_JoystickGetGUIDString과 같은 32자 소문자 16진수 문자열을 순수 Java로 만든다.
+	// libsdl4j가 SDL_GUID의 16바이트를 long 두 개로 매핑해두므로 네이티브 호출 없이 조립 가능하다
 	static String formatJoystickGuid(SDL_JoystickGUID guid) {
 		if (guid == null) return null;
 		java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.nativeOrder());
@@ -274,11 +169,7 @@ public final class SdlJoystickReader {
 			if (b != 0) allZero = false;
 			sb.append(HEX_LOWER[(b >> 4) & 0xF]).append(HEX_LOWER[b & 0xF]);
 		}
-		// SDL uses an all-zero GUID for "not a real device", so this doubles as
-		// the null case - and also covers the (never-observed) possibility of a
-		// by-value return not having been decoded into the Java fields at all,
-		// which would otherwise silently collapse every device onto one shared
-		// all-zero identity and cross-wire their saved profiles.
+		// 전부 0이면 SDL이 말하는 "실제 장치 아님"이므로 null 처리
 		return allZero ? null : sb.toString();
 	}
 
@@ -291,15 +182,6 @@ public final class SdlJoystickReader {
 		}
 	}
 
-	// Handle-based reads (button/axis/hat) below are called from the client
-	// tick's hottest per-frame paths (WheelInput.tick(), WheelDrivingControl's
-	// isDown(), the calibration wizard's per-tick scan) - dozens of native
-	// calls per tick across a whole session. SDL itself is designed to make
-	// these safe even against a detached-but-not-yet-closed handle (unlike
-	// the index-based GUID query above, which is the one confirmed to
-	// segfault on a stale value) - but try/catch here costs nothing on the
-	// success path and is cheap insurance against whatever this exact
-	// SDL2/DirectInput/driver stack does that isn't in any spec.
 	public static int buttonCount() {
 		if (openJoystick == null) return 0;
 		try {
@@ -327,7 +209,6 @@ public final class SdlJoystickReader {
 		}
 	}
 
-	/** Normalized to roughly -1.0..1.0 from SDL's raw Sint16 axis range - see this class's doc comment. */
 	public static float axisValue(int index) {
 		if (openJoystick == null) return 0f;
 		try {
@@ -347,7 +228,6 @@ public final class SdlJoystickReader {
 		}
 	}
 
-	/** Raw SDL_HAT_* bitmask (centered/up/right/down/left, or a diagonal OR of two) - numerically identical to GLFW's own hat convention. */
 	public static byte hatValue(int index) {
 		if (openJoystick == null) return SdlJoystickConst.SDL_HAT_CENTERED;
 		try {
@@ -361,16 +241,8 @@ public final class SdlJoystickReader {
 		return value == SdlJoystickConst.SDL_HAT_CENTERED;
 	}
 
-	/**
-	 * Must be called once per tick before reading button/axis state - unlike
-	 * GLFW (whose joystick reads are always live), SDL's joystick state
-	 * only refreshes on an explicit SDL_JoystickUpdate() call when the SDL
-	 * event loop/SDL_PollEvent isn't being used, which it isn't here.
-	 * Debounced like every other caller into pollIfStale() - safe to call
-	 * this more than once within the same tick (several call sites already
-	 * do, indirectly via deviceCount()/open()) without spending an extra
-	 * native poll on it.
-	 */
+	// 매 틱 버튼/축을 읽기 전에 한 번 호출해야 한다. GLFW와 달리 SDL은
+	// SDL_JoystickUpdate()를 명시적으로 부를 때만 상태가 갱신된다 (pollIfStale로 디바운스됨)
 	public static void update() {
 		pollIfStale();
 	}

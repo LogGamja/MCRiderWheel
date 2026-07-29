@@ -10,32 +10,11 @@ import net.minecraft.network.chat.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Lets the player explicitly pick which calibrated wheel to actually drive
- * with when more than one is connected at once - without this,
- * {@link WheelInput#tick()} just uses whichever calibrated device SDL
- * happens to enumerate first, which isn't necessarily stable across
- * reconnects/reboots. The choice is persisted via
- * {@link WheelConfig#setPreferredGuid}, and only takes effect for devices
- * that are both connected and calibrated at the time WheelInput reads it -
- * an unplugged preferred wheel just falls back to that first-found
- * behavior rather than leaving nothing driveable.
- *
- * Only devices that can actually steer are listed - not merely ones with
- * *some* saved profile. A device that only ever went through BUTTONS_ONLY
- * saves a profile with steerAxis = -1, which WheelInput skips outright, so
- * listing it would let the player pick a wheel, watch the [선택됨] marker
- * move to it, and have a different one keep driving. Calibrate steering from
- * the settings screen first and it shows up here.
- */
+// 계산된 휠이 여러 대 연결됐을 때 실제로 운전에 쓸 장치를 고르는 화면.
+// 조향 보정이 끝나 isDriveable()을 만족하는 장치만 목록에 나온다
 public class WheelDeviceSelectScreen extends Screen {
 	private final Screen parent;
-	// Set in init(), read back in render() so the notice text can sit right
-	// above the button list regardless of how many calibrated wheels there are.
 	private int listTop;
-	// Set in init(), read back in render() to show an explicit empty-state
-	// message rather than leaving just the [닫기] button with no explanation
-	// of why the list above it is blank.
 	private List<String> guids = new ArrayList<>();
 
 	public WheelDeviceSelectScreen(Screen parent) {
@@ -56,17 +35,8 @@ public class WheelDeviceSelectScreen extends Screen {
 		for (String guid : guids) {
 			WheelProfile profile = WheelConfig.get(guid);
 			String name = profile.name != null && !profile.name.isEmpty() ? profile.name : guid;
-			// Marked against WheelInput.activeGuid - the device actually
-			// driving right now - rather than the raw stored preferredGuid.
-			// Those two agree whenever the preferred device is connected, but
-			// once it disconnects, WheelInput silently falls back to whatever
-			// other calibrated wheel is present without ever rewriting
-			// preferredGuid (falling back isn't the same as the player
-			// explicitly choosing that device - see WheelInput.tick()'s own
-			// comment on this). Comparing against the raw preference then left
-			// the device that's actually driving unmarked, with the list
-			// showing nothing as selected at all even though one wheel very
-			// much was.
+			// 실제로 운전 중인 WheelInput.activeGuid 기준으로 표시한다
+			// (선호 장치가 연결이 끊기면 다른 장치로 자동 전환되지만 preferredGuid 자체는 안 바뀌므로)
 			String label = name + (guid.equalsIgnoreCase(WheelInput.activeGuid) ? " [선택됨]" : "");
 			Button btn = Button.builder(Component.literal(label), b -> choose(guid))
 					.bounds(width / 2 - btnWidth / 2, y, btnWidth, btnHeight)
@@ -75,9 +45,6 @@ public class WheelDeviceSelectScreen extends Screen {
 			y += btnHeight + gap;
 		}
 		if (guids.isEmpty()) {
-			// Room for the "표시할 휠이 없습니다" notice drawn in render(), which
-			// otherwise sits right on top of [닫기] with nothing in the list
-			// above to push it down.
 			y += 16;
 		}
 
@@ -87,18 +54,12 @@ public class WheelDeviceSelectScreen extends Screen {
 	}
 
 	private void choose(String guid) {
-		// Before the preference lands, so the haptic handle is closed while the
-		// joystick handle it was opened from is still the old device's - see
-		// WheelForceFeedback.releaseForDeviceChange().
+		// 조이스틱 핸들이 아직 이전 장치를 가리키는 동안 힘 피드백 핸들부터 닫는다
 		WheelForceFeedback.releaseForDeviceChange();
 		WheelConfig.setPreferredGuid(guid);
-		// Stay open and rebuild instead of closing, so the [선택됨] marker moves
-		// to what was just picked and the player can see the choice took (and
-		// change their mind) without reopening the screen.
 		rebuildWidgets();
 	}
 
-	/** Every currently-connected device with a saved, driveable WheelProfile, in SDL's own enumeration order - the same isDriveable() filter WheelInput.tick() applies, so anything listed here can actually win the preference. */
 	private static List<String> calibratedConnectedGuids() {
 		List<String> guids = new ArrayList<>();
 		int count = SdlJoystickReader.deviceCount();

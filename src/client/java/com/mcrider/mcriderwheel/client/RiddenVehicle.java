@@ -3,11 +3,7 @@ package com.mcrider.mcriderwheel.client;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
 
-/**
- * Vehicle the player is driving, or is spectating someone else driving -
- * the camera entity (not client.player directly) is what covers both cases,
- * since a spectating player's own getVehicle() is always null.
- */
+// 관전 중인 플레이어는 자신의 getVehicle()이 항상 null이라 카메라 엔티티 기준으로 판단한다
 public final class RiddenVehicle {
 	private RiddenVehicle() {
 	}

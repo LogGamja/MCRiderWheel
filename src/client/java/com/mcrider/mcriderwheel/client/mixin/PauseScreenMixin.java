@@ -18,16 +18,10 @@ public abstract class PauseScreenMixin extends Screen {
 
 	@Inject(method = "init", at = @At("RETURN"))
 	private void mcriderWheel$addSettingsButton(CallbackInfo ci) {
-		// showsPauseMenu() is false for the bare "saving world"/loading variant of
-		// this screen, whose init() returns early without building any menu
-		// widgets - skip adding ours too, or it'd be the only thing on an
-		// otherwise-empty screen.
+		// 저장/로딩 중 화면은 위젯이 없어 여기서 건너뛴다
 		if (!((PauseScreen) (Object) this).showsPauseMenu()) return;
 
-		// Sits just to the right of the top-left corner (not the corner itself,
-		// which another mod's own pause-screen button was found occupying at the
-		// same size) - still far enough from vanilla's own width/2-centered
-		// button column to stay clear of it at any scale.
+		// 좌상단 모서리는 다른 모드 버튼과 겹쳐서 약간 오른쪽으로 배치
 		this.addRenderableWidget(Button.builder(Component.literal("레이싱 휠 설정"), b -> {
 					assert this.minecraft != null;
 					this.minecraft.setScreen(new WheelSettingsScreen(this));

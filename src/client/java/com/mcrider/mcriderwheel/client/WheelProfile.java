@@ -8,27 +8,14 @@ public class WheelProfile {
 	public float steerLeft;
 	public float steerCenter;
 	public float steerRight;
-	// Raw axis values at the wheel's actual physical lock-to-lock extremes,
-	// captured during calibration regardless of the chosen lock range. Used
-	// to detect how far the wheel has been turned past the configured
-	// steerLeft/steerRight lock, for the soft-lock end-stop force.
+	// 보정 중 측정한 물리적 끝단 값. 설정한 락을 넘어간 정도(오버트래블) 계산에 사용
 	public float steerPhysicalLeft;
 	public float steerPhysicalRight;
-	// Raw axis units per degree of physical rotation (from the REF90
-	// calibration step), 0 if unknown. Lets the soft-lock wall width be
-	// defined in real degrees instead of a fraction of the raw range.
+	// REF90 단계에서 구한 1도당 raw 축 단위. 소프트락 벽 폭을 각도 단위로 잡기 위함
 	public float steerRawPerDegree;
 
-	// Steering rotation speed, as a percentage of the base yaw rate (see
-	// WheelDrivingControl.BASE_YAW_RATE_DEG_PER_SEC). This used to default to
-	// 200% purely to reproduce the fixed turn rate from before it was
-	// adjustable, which left the default pinned to the slider's own maximum -
-	// adjustable downwards only. 100% sits mid-range so it can go either way.
 	public float steerSensitivityPercent = 100f;
 
-	// Overall force feedback output strength, as a percentage multiplier
-	// applied on top of the centering/soft-lock/pulse magnitudes. 100%
-	// preserves the as-tuned defaults.
 	public float ffbStrengthPercent = 100f;
 
 	public int throttleAxis = -1;
@@ -39,42 +26,27 @@ public class WheelProfile {
 	public float brakeReleased;
 	public float brakePressed;
 
-	// Misc inputs, each either a real button or a spare pedal/axis (e.g. a
-	// clutch with nothing else to do). gearDown and booster both map to the
-	// same in-game key (strafe-left/A) but are captured as separate physical
-	// inputs, since MCRider's own vehicles use A for gear-down on some and
-	// booster on others - one wheel button can be bound to whichever the
-	// current car actually uses.
+	// gearDown과 booster는 둘 다 좌측 이동 키에 매핑됨 (MCRider 차량마다 쓰는 게 다름)
 	public InputBinding gearDown = new InputBinding();
 	public InputBinding gearUp = new InputBinding();
 	public InputBinding booster = new InputBinding();
 	public InputBinding special = new InputBinding();
 	public InputBinding leftClick = new InputBinding();
 	public InputBinding rightClick = new InputBinding();
-	// Convenience look up/down - fixed speed, not a real control input.
+	// 고정 속도 시선 조작용, 실제 주행 입력은 아님
 	public InputBinding lookUp = new InputBinding();
 	public InputBinding lookDown = new InputBinding();
-	// Dismount/give-up (sneak), mount outside the race system (swap-hands/F),
-	// camera perspective cycling, and hotbar slot shift - all convenience
-	// bindings, none of them affect actual driving.
 	public InputBinding crouch = new InputBinding();
 	public InputBinding swapHands = new InputBinding();
 	public InputBinding viewToggle = new InputBinding();
 	public InputBinding hotbarShift = new InputBinding();
 
-	/**
-	 * Whether this profile can actually steer. A calibration run that failed to
-	 * identify the steering axis (bestAxis() returning -1, e.g. the wheel was
-	 * never turned far enough between the LEFT/RIGHT steps) saves with
-	 * steerAxis = -1, which drives nothing - WheelInput skips such a profile so
-	 * a genuinely working second wheel gets picked instead of the broken one
-	 * silently reporting itself as "recognized".
-	 */
+	// 조향축을 못 찾은 보정(steerAxis = -1)은 주행 불가능한 상태
 	public boolean isDriveable() {
 		return steerAxis >= 0 && Math.abs(steerRight - steerLeft) > 1e-4f;
 	}
 
-	/** Deep copy for the calibration wizard to work on, so a mid-wizard cancel never touches the shared, currently-driving instance. */
+	// 보정 위저드가 취소돼도 실제 사용 중인 프로필이 건드려지지 않도록 깊은 복사
 	public WheelProfile copy() {
 		WheelProfile c = new WheelProfile();
 		c.guid = guid;

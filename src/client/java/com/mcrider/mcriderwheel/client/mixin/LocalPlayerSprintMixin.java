@@ -8,17 +8,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * Vanilla detects double-tap-forward-to-sprint with a short "trigger
- * window" (sprintTriggerTime): release forward, then press it again within
- * ~7 ticks, and that counts as a double tap. The PWM throttle fine-control
- * in {@link WheelDrivingControl} taps the forward key on/off many times a
- * second at partial pedal, which looks exactly like rapid double-tapping
- * to that heuristic - so even a light touch on the pedal would start
- * sprinting. Zeroing the trigger window every tick while the pedal is
- * actively being PWM-modulated keeps that window from ever arming, without
- * touching real keyboard double-tap sprinting when the pedal is untouched.
- */
+// PWM으로 페달을 빠르게 여닫으면 바닐라의 더블탭 스프린트 감지가 오작동하므로
+// 페달이 실제로 조작되는 동안은 트리거 윈도우를 매 틱 0으로 초기화한다
 @Mixin(LocalPlayer.class)
 public abstract class LocalPlayerSprintMixin {
 	@Shadow

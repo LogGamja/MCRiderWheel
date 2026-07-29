@@ -14,19 +14,11 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * SoundManager.addListener() (the non-mixin way to observe sound playback)
- * only notifies listeners after SoundEngine.play() has already computed a
- * non-zero local playback volume - a sound the server broadcasts but that's
- * too quiet or too far away to actually be audible locally never reaches
- * it. Hooking the raw sound packets instead fires on every server-side
- * occurrence of the event regardless of local distance/volume.
- */
+// SoundManager.addListener()는 로컬 재생 볼륨이 0보다 클 때만 알려주므로
+// 너무 멀거나 조용해서 안 들리는 소리는 놓친다. 패킷을 직접 후킹하면 거리/볼륨과 무관하게 잡힌다
 @Mixin(ClientPacketListener.class)
 public abstract class SoundPacketMixin {
-	// Zombies breaking down a wooden door is MCRider's stand-in impact cue
-	// (no dedicated collision sound exists yet) - fire a kick whenever it
-	// plays while the player is riding, or spectating someone who is.
+	// 좀비가 문 부수는 소리를 MCRider의 충돌 신호 대용으로 사용 중
 	private static final ResourceLocation ATTACK_DOOR_SOUND = ResourceLocation.withDefaultNamespace("entity.zombie.attack_wooden_door");
 
 	@Inject(method = "handleSoundEvent", at = @At("HEAD"))
@@ -39,44 +31,23 @@ public abstract class SoundPacketMixin {
 		handle(packet.getSound());
 	}
 
-	/**
-	 * Takes the raw Holder rather than an already-resolved ResourceLocation so
-	 * the thread check below happens before anything is read off the packet:
-	 * resolving it at the call site instead meant Holder.value() - a registry
-	 * dereference - ran on the netty thread for every sound packet the server
-	 * sent, only for the result to be thrown away one line later. Worse, an
-	 * unbound holder makes value() throw, and doing that inside a HEAD
-	 * injection on the netty thread surfaces as an "Internal Exception"
-	 * disconnect rather than anything this mod could recover from.
-	 */
+	// 스레드 체크가 리소스 읽기보다 먼저 실행되도록 resolve된 값 대신 raw Holder를 받는다
 	private static void handle(Holder<SoundEvent> sound) {
 		Minecraft client = Minecraft.getInstance();
-		// Both handlers' real bodies open with PacketUtils.ensureRunningOnSameThread(),
-		// which - when we're not already on the main thread - reschedules the whole
-		// packet handler onto it and aborts the current (netty-thread) call via a
-		// thrown RunningOnDifferentThreadException. Since that means this HEAD
-		// injection actually fires twice (once off-thread, once for real), skip the
-		// off-thread call here rather than acting on it: WheelForceFeedback's
-		// SDL_Haptic calls all assume the client tick thread, and letting the netty
-		// thread call pulse() concurrently with tick()'s set_force()/stop() on the
-		// same handle is exactly the kind of native-side race that crashes the JVM.
+		// 이 HEAD 인젝션은 netty 스레드와 메인 스레드에서 두 번 불리므로
+		// 네이티브 호출 충돌을 막기 위해 메인 스레드가 아니면 무시한다
 		if (!client.isSameThread()) return;
 
 		ResourceLocation soundLocation;
 		try {
 			soundLocation = sound.value().location();
 		} catch (Throwable t) {
-			// An exception escaping a HEAD injection aborts vanilla's own packet
-			// handling, so a malformed/unbound sound holder would take the
-			// connection down over a purely cosmetic FFB cue.
+			// 예외가 새어나가면 접속이 끊기므로 여기서 막는다
 			return;
 		}
 		if (!ATTACK_DOOR_SOUND.equals(soundLocation)) return;
 
-		// A player riding directly has cameraEntity == the player, while
-		// spectating another entity (e.g. via the player list) points
-		// cameraEntity at that target instead - checking its vehicle covers
-		// both "I'm riding" and "I'm watching someone who's riding" alike.
+		// 직접 타는 경우와 관전 중인 경우를 모두 커버
 		if (RiddenVehicle.get(client) == null) return;
 
 		WheelForceFeedback.pulse(0.2f, 150);

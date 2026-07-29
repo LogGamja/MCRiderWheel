@@ -8,134 +8,66 @@ import com.mcrider.mcriderwheel.client.sdl.SdlForceFeedback;
 import com.mcrider.mcriderwheel.client.sdl.SdlJoystickReader;
 import net.minecraft.client.Minecraft;
 
-/**
- * Drives a simple self-centering force back into the wheel: the further
- * the wheel is turned from center, the harder it pushes back - just
- * enough to prove the FFB path actually reaches the hardware. Real
- * per-corner/curb/collision forces belong in MCRider itself later; this
- * is only the recognition/plumbing test.
- */
+// 휠이 중앙에서 멀어질수록 세게 되돌아오는 센터링 힘을 낸다.
 public final class WheelForceFeedback {
-	// Centering force strength while still within the configured lock. Must
-	// stay below 1 so the soft-lock wall (which ramps up to full strength
-	// past the lock) actually has headroom to feel like a distinct jump -
-	// at STRENGTH=1 the centering force already saturates to max right at
-	// the lock boundary, leaving nothing for the wall to add.
+	// 락 범위 안에서의 센터링 강도. 1 미만이어야 소프트락 벽이 더할 여지가 남는다
 	private static final float STRENGTH = 0.5f;
-	// Extra centering-force boost applied while the wheel's movement
-	// heading and MCRider's direction-indicator entity disagree by more
-	// than the mismatch threshold (see DirectionMismatchFeedback) - makes the
-	// wheel noticeably heavier/stiffer as a "something's off" cue.
+	// 이동 방향과 MCRider 방향 표시 엔티티가 어긋날 때 추가되는 저항
 	private static final float EXTRA_RESISTANCE_BOOST = 0.2f;
+	// FFB 강도 100%를 넘으면 순수 센터링만으로 출력 상한에 도달해버려서 벽이
+	// 더할 게 없어진다. 이걸 막기 위해 순수 센터링이 쓸 수 있는 몫을 이 비율로 제한한다
+	// (100% 이하에서는 원래도 이 값을 안 넘어서 영향 없음)
+	private static final float CENTER_MAGNITUDE_BUDGET = 0.85f;
 
-	private static final int PULSE_PERIOD_MS = 40; // ~25 Hz wobble, rendered by the device itself
+	private static final int PULSE_PERIOD_MS = 40; // 약 25Hz 진동, 장치 자체가 렌더링
 
 	private static boolean sdlAvailable;
 	private static boolean enabled;
 	private static int handle = -1;
 	private static boolean forceLoggedOnce = true;
-	// Windows DirectInput (what SDL2's haptic backend uses under the hood)
-	// silently un-acquires the device when the game window loses focus, so
-	// force output just stops with no error - alt-tabbing away and back
-	// needs the device closed and reopened to get DirectInput to reacquire
-	// it and start actually outputting force again.
+	// 창 포커스를 잃으면 DirectInput이 조용히 장치를 놓아버려서 재확보를 위해 재오픈이 필요하다
 	private static boolean wasWindowActive = true;
-	// GUID of the last profile enable() failed to open, so tick() doesn't
-	// retry (and re-log the full SDL device dump) 20x/sec for a wheel with
-	// no FFB support or an unmatched GUID - cleared on disconnect so a
-	// later reconnect still gets a fresh attempt.
+	// enable()이 열지 못한 GUID - FFB 미지원 장치에서 매 틱 재시도/재로그하지 않기 위함
 	private static String failedGuid;
-	// GUID the currently-open handle actually belongs to. Without this, enable()
-	// would latch onto whichever device was active when it first ran and never
-	// re-check: switching wheels (WheelDeviceSelectScreen, or recalibrating a
-	// second device) moves WheelInput to the new one while force output kept
-	// going to the old one - steering one wheel, feeling the other.
+	// 현재 열린 핸들이 실제로 어느 GUID인지 - 없으면 휠을 바꿔도 힘 피드백이 옛 장치로 계속 나간다
 	private static String enabledGuid;
 	private static volatile boolean extraResistance;
-	// Set from TireGripFeedback: 0 = no grip-loss vibration, otherwise its
-	// strength (0..1). Deliberately rendered as an oscillating direction on
-	// the same continuous constant-force channel as centering, rather than
-	// via pulse() - pulse() destroys and recreates a one-shot effect on
-	// every call, which is fine for an occasional kick but re-triggering it
-	// every tick just destroys each burst before the device ever renders
-	// it, so nothing ends up felt (see PULSE_COOLDOWN_NANOS's crash-history
-	// comment for why pulse() is touchy about rapid re-calls in general).
+	// TireGripFeedback이 설정: 그립 손실 진동 강도. pulse()가 아니라 센터링과 같은
+	// 상시 constant-force 채널에서 진동으로 렌더링한다 (pulse는 매 틱 재호출하면 서로 죽인다)
 	private static volatile float gripVibrationMagnitude;
-	// Set from TireGripFeedback: true while the tires have actually broken
-	// loose (state-drift, not just a low XP-bar reading). While set, tick()
-	// drops the centering pull entirely - a real car gives essentially no
-	// self-aligning torque back through the wheel once the tires genuinely
-	// lose grip - but keeps both the soft-lock wall (a mechanical end-stop
-	// on the rig itself, not a grip effect) and gripVibrationMagnitude, the
-	// tires shaking against the road still being a real, physical cue.
+	// TireGripFeedback이 설정: 타이어가 실제로 미끄러진 상태(state-drift)인지.
+	// true면 센터링은 완전히 빼고 소프트락 벽과 진동만 남긴다
 	private static volatile boolean tiresBrokenLoose;
 	private static int vibrationPhaseTicks;
-	private static final int VIBRATION_HALF_PERIOD_TICKS = 1; // ~10Hz square-wave buzz at the 20Hz client tick rate
-	// Guards against hammering mcrider_ffb_pulse() - e.g. several zombies
-	// breaking doors near each other can fire many sound packets within a
-	// few ms on a busy server, and calling the native pulse function that
-	// rapidly has been observed to crash the JVM with a JNA "Invalid memory
-	// access" (native-side effect create/destroy race, most likely).
-	private static final long PULSE_COOLDOWN_NANOS = 150_000_000L; // matches the 150ms pulse duration used everywhere
+	private static final int VIBRATION_HALF_PERIOD_TICKS = 1; // 20Hz 틱 기준 약 10Hz 사각파
+	// mcrider_ffb_pulse()를 짧은 시간 안에 여러 번 부르면 JVM이 죽는 걸 확인해서 쿨다운을 둔다
+	private static final long PULSE_COOLDOWN_NANOS = 150_000_000L; // 펄스 지속시간(150ms)과 동일
 	private static long lastPulseNanos;
-	// Separate from lastPulseNanos itself since System.nanoTime() isn't
-	// guaranteed to be non-negative or zero at startup - a plain "has this
-	// ever fired" sentinel value could theoretically collide with a real
-	// timestamp, where `now - lastPulseNanos` wrapping around long overflow
-	// would gate every future pulse call forever.
+	// System.nanoTime()이 항상 양수라는 보장이 없어서 "한 번이라도 쐈는지"는 별도 플래그로 관리
 	private static boolean everPulsed;
-	// If a native call ever does crash despite the above, don't keep
-	// calling back into what's now a possibly-corrupted native library -
-	// disable FFB for the rest of the session instead of risking another
-	// (uncatchable-in-practice) crash to desktop.
+	// 네이티브 호출이 실제로 크래시하면 잠재적으로 손상된 라이브러리를 다시 건드리지 않고
+	// 이번 세션 동안 FFB를 완전히 꺼버린다
 	private static volatile boolean nativeFaulted;
-	// SdlJoystickReader already holds the wheel open for buttons/axes;
-	// enable() then has SDL open the same physical device a second time
-	// (a separate handle) for haptics. Doing that the instant the device
-	// is first seen
-	// (e.g. right as a world loads and a previously-calibrated wheel is
-	// detected) has been observed to hard-crash the process with a raw
-	// Windows access violation (0xC0000005) that never even produces a
-	// crash report - not a JNA-catchable exception, so try/catch around
-	// the native calls can't help here. Waiting for the device to sit
-	// "available" for a bit before asking SDL to open it is a mitigation
-	// for what looks like a driver-side reentrancy issue, not a real fix.
+	// SdlJoystickReader가 버튼/축용으로 이미 장치를 열어둔 상태에서, 여기서 또
+	// 별도 핸들로 haptic을 열면 장치가 나타난 직후엔 raw 액세스 위반으로 크래시했다.
+	// 장치가 "사용 가능" 상태로 잠시 안정된 뒤에 여는 게 완화책이다
 	private static final long ENABLE_ARM_DELAY_NANOS = 1_000_000_000L;
-	// -1 means "not currently available" (mirrors availableSinceNanos reset on disconnect).
-	private static long availableSinceNanos = -1;
-	// GUID availableSinceNanos is currently timing, so switching devices
-	// restarts that window instead of inheriting the old device's elapsed time.
-	private static String armedGuid;
+	private static long availableSinceNanos = -1; // -1 = 현재 사용 불가
+	private static String armedGuid; // availableSinceNanos가 재는 대상 GUID
 
 	private WheelForceFeedback() {
 	}
 
-	// Set once an SDL FFB init failure has been logged, so ensureSdlAvailable()
-	// retrying every tick (see its own doc comment) doesn't also spam the log
-	// every tick - only the first failure is reported, same pattern as
-	// SdlJoystickReader.ensureSdlInit()'s own sdlInitFailureLogged.
+	// 첫 실패만 로그로 남기기 위한 플래그
 	private static boolean sdlInitFailureLogged;
 
 	public static void init() {
-		// Unlike the old native/mcrider_ffb.c + JNA path (a separate .dll
-		// that could fail to load), this touches libsdl4j's own bundled SDL2
-		// native library (see build.gradle - ControllableSDL was tried first
-		// and dropped) - JNA loads it lazily on first use, so
-		// this call both forces that load attempt now (rather than
-		// surprising enable() with it later) and doubles as SdlForceFeedback's
-		// own SDL_InitSubSystem(JOYSTICK|HAPTIC) call.
+		// libsdl4j의 SDL2 네이티브 라이브러리를 지금 로드해서 나중에 enable()에서
+		// 놀라지 않게 한다. SdlForceFeedback의 SDL_InitSubSystem 호출을 겸한다
 		ensureSdlAvailable();
 	}
 
-	/**
-	 * Previously a failed init() latched sdlAvailable = false forever - tick()
-	 * bailed on that flag as its very first check, so a momentary failure
-	 * (e.g. the native lib not finished extracting/loading yet) permanently
-	 * disabled force feedback for the rest of the session with no retry, the
-	 * same bug SdlJoystickReader.ensureSdlInit() already fixed on the
-	 * joystick side. Retrying here every tick until it succeeds (or a real
-	 * nativeFaulted trips) matches that same self-healing approach.
-	 */
+	// 초기화 실패해도 latch하지 않고 매 틱 재시도한다 (nativeFaulted가 뜨기 전까지)
 	private static boolean ensureSdlAvailable() {
 		if (sdlAvailable) return true;
 		try {
@@ -157,17 +89,14 @@ public final class WheelForceFeedback {
 		return false;
 	}
 
-	/** Set from DirectionMismatchFeedback: whether the movement/direction-entity yaw mismatch currently exceeds its threshold. */
 	public static void setExtraResistance(boolean active) {
 		extraResistance = active;
 	}
 
-	/** Set from TireGripFeedback: grip-loss vibration strength (0..1), 0 = none. Still rendered while setTiresBrokenLoose(true) is in effect - see that method - just without any centering underneath it. */
 	public static void setGripVibrationMagnitude(float magnitude) {
 		gripVibrationMagnitude = Math.max(0f, Math.min(1f, magnitude));
 	}
 
-	/** Set from TireGripFeedback: true while the tires have actually broken loose - see the tiresBrokenLoose field's own comment. */
 	public static void setTiresBrokenLoose(boolean broken) {
 		tiresBrokenLoose = broken;
 	}
@@ -212,12 +141,8 @@ public final class WheelForceFeedback {
 		}
 	}
 
-	/**
-	 * Deliberately doesn't route its own native-call failures through
-	 * {@link #onNativeFault} - that method calls back into disable(), and
-	 * a crash from disable()'s own stop/close calls would recurse into
-	 * itself forever instead of just disabling FFB once.
-	 */
+	// onNativeFault를 거치지 않는다 - disable() 자체의 실패가 다시 onNativeFault로 돌면
+	// disable()이 무한 재귀할 수 있다
 	private static void disable(String reason) {
 		if (enabled) {
 			WheelClientMain.LOGGER.info("[FFB] disabling force feedback ({})", reason);
@@ -225,18 +150,8 @@ public final class WheelForceFeedback {
 		enabled = false;
 		enabledGuid = null;
 		failedGuid = null;
-		// A handle being closed here means whatever reopens next (a fresh
-		// enable()) starts with a fresh effect - stoppedForCalibration's "already
-		// issued stop() for this session" state belongs to the handle that just
-		// went away, not whatever comes next.
 		stoppedForCalibration = false;
-		// Re-arm the settle delay so whatever reopens next waits it out again.
-		// Without this, a device that opens fine but whose set_force then
-		// keeps failing would close+reopen every single tick (the failure
-		// path calls disable(), and availableSinceNanos was set back when the
-		// wheel first appeared, so "settled" is already true) - a 20 Hz
-		// DirectInput open/close storm, which is the same shape of abuse that
-		// hard-crashed the process before ENABLE_ARM_DELAY_NANOS existed.
+		// 다음 open이 또 20Hz open/close storm이 되지 않도록 안정화 대기를 다시 건다
 		availableSinceNanos = System.nanoTime();
 		if (sdlAvailable && handle >= 0) {
 			try {
@@ -250,11 +165,7 @@ public final class WheelForceFeedback {
 		handle = -1;
 	}
 
-	/**
-	 * SdlJoystickReader/SdlForceFeedback each enumerate joysticks
-	 * independently, so we match devices by their GUID string rather than
-	 * assuming matching indices.
-	 */
+	// SdlJoystickReader와 SdlForceFeedback은 각자 따로 열거하므로 인덱스가 아니라 GUID로 매칭한다
 	private static int findSdlIndexForGuid(String guid) {
 		if (guid == null || !sdlAvailable) return -1;
 		int count = SdlForceFeedback.mcrider_ffb_device_count();
@@ -266,33 +177,14 @@ public final class WheelForceFeedback {
 		return -1;
 	}
 
-	/**
-	 * Fires a one-shot "kick" - a stand-in for landing/collision impacts
-	 * until those are wired up to real game events. This runs as its own
-	 * hardware-timed SDL_HAPTIC_SINE effect (see SdlForceFeedback.mcrider_ffb_pulse)
-	 * rather than being faked by repeatedly nudging the continuous centering
-	 * force from the ~20 Hz client tick: at that poll rate a "3 wobbles
-	 * in 150ms" wave aliases almost perfectly with the sampling interval
-	 * and collapses into what's effectively a single fixed-sign nudge -
-	 * which is why the very first attempt at this only ever pulled one
-	 * direction no matter which way the wheel was turned.
-	 *
-	 * The kick's first half-cycle leads toward the same side the wheel is
-	 * currently turned - right turn kicks right, left turn kicks left.
-	 * Recall sign=+1 (dir[0]=+1) is physically "push left" (it's what
-	 * mcrider_ffb_set_force sends for direction_deg=0, which centers a
-	 * right turn), so matching the turn direction means the *opposite*
-	 * sign of what centering would use for that same turn.
-	 */
+	// 착지/충돌 충격을 흉내내는 단발성 킥. 20Hz 틱에서 흔드는 게 아니라 장치 자체
+	// 타이밍의 SDL_HAPTIC_SINE 이펙트로 처리해야 방향이 한쪽으로만 쏠리지 않는다.
+	// 킥의 첫 반주기는 현재 조향 방향과 같은 쪽으로 향한다 (센터링과는 반대 부호)
 	public static void pulse(float magnitude, long durationMs) {
 		if (nativeFaulted || !enabled || !sdlAvailable || handle < 0) {
 			return;
 		}
-		// Same reasoning as tick()'s own calibration-screen guard below -
-		// don't fight the player's hand with an impact kick while they're
-		// deliberately holding the wheel steady at a lock/reference point.
-		// This wasn't covered by that guard since pulse() is called
-		// directly from SoundPacketMixin, not from tick().
+		// 보정 화면에서 손으로 기준점을 잡고 있는 동안은 충격 킥으로 방해하지 않는다
 		if (Minecraft.getInstance().screen instanceof WheelCalibrationScreen) {
 			return;
 		}
@@ -316,17 +208,8 @@ public final class WheelForceFeedback {
 		}
 	}
 
-	/**
-	 * Closes the haptic handle ahead of a deliberate device switch. Both this
-	 * class and SdlJoystickReader hold their own SDL_JoystickOpen on the same
-	 * physical device (this one additionally wraps it in
-	 * SDL_HapticOpenFromJoystick), and the reader repoints its handle inside
-	 * WheelInput.tick() - which runs *before* this class's own tick() notices
-	 * the GUID changed. Calling this from the code that initiates the switch
-	 * keeps the haptic side from briefly outliving the joystick handle it was
-	 * opened from. tick()'s enabledGuid check still covers switches that
-	 * happen without going through here (hotplug, recalibration).
-	 */
+	// 장치 전환 직전에 haptic 핸들을 미리 닫는다. WheelInput.tick()이 조이스틱
+	// 핸들을 먼저 바꿔버리는 것보다 앞서 실행되도록 전환을 시작하는 쪽에서 호출한다
 	public static void releaseForDeviceChange() {
 		if (enabled) disable("device change requested");
 	}
@@ -337,10 +220,7 @@ public final class WheelForceFeedback {
 		disable("native fault in " + call);
 	}
 
-	// Players were previously having to set the FFB-strength slider to
-	// ~150% just to feel the effect at all - this boosts every setting's
-	// actual output by that same factor, so e.g. 100% now delivers what
-	// 150% used to.
+	// 예전엔 슬라이더를 150%까지 올려야 힘이 느껴졌어서, 모든 설정값의 실제 출력에 이 배율을 곱한다
 	private static final float STRENGTH_BOOST = 1.5f;
 
 	private static float strengthMultiplier() {
@@ -349,36 +229,20 @@ public final class WheelForceFeedback {
 		return percent / 100f * STRENGTH_BOOST;
 	}
 
-	/**
-	 * Force feedback has no on/off switch anymore - it opens automatically
-	 * whenever a calibrated wheel is present, and the FFB-strength slider
-	 * (0% = no output) is what used to be the toggle.
-	 */
+	// 힘 피드백은 별도 켜기/끄기가 없고 계산된 휠이 있으면 자동으로 열린다
 	public static void tick() {
 		if (nativeFaulted || !ensureSdlAvailable()) return;
 
 		boolean windowActive = Minecraft.getInstance().isWindowActive();
 		if (windowActive && !wasWindowActive && enabled) {
-			// A full close+reopen is a slow, blocking DirectInput round trip. A
-			// window whose focus flickers every few seconds (observed in this
-			// project's own logs) would otherwise trigger one every flicker,
-			// which reads as a hard stutter each time. Try the cheap in-place
-			// restart first and only fall back to the expensive reacquire if
-			// that actually fails - a genuine un-acquire makes it fail, while a
-			// spurious focus blip (where the device was never really lost)
-			// succeeds and costs nothing.
+			// 완전한 재오픈은 느린 DirectInput 왕복이라, 포커스가 잠깐 깜빡인 경우를
+			// 위해 먼저 저렴한 재시작을 시도하고, 그게 실패할 때만 완전히 재오픈한다
 			try {
 				if (handle >= 0 && SdlForceFeedback.mcrider_ffb_restart_effect(handle) != 0) {
 					disable("window focus regained, reopening so DirectInput reacquires");
 				} else {
-					// restart_effect Run()s the effect, so it undoes the
-					// calibration-screen stop() below - re-arm that latch so the
-					// stop is re-issued on this same tick rather than never
-					// again. This block sits above (and deliberately outside)
-					// the calibration guard, so alt-tabbing back mid-wizard
-					// would otherwise leave centering force fighting the hand
-					// holding the wheel at a reference point for the rest of the
-					// session.
+					// restart_effect가 이펙트를 재생시켜서 보정 화면용 stop()을 무효화하므로
+					// 이번 틱에 다시 stop이 걸리도록 플래그를 재설정한다
 					stoppedForCalibration = false;
 				}
 			} catch (Throwable t) {
@@ -388,82 +252,39 @@ public final class WheelForceFeedback {
 		wasWindowActive = windowActive;
 
 		WheelProfile profile = WheelInput.activeProfile;
-		// The driving device changed out from under an already-open handle
-		// (wheel switched in WheelDeviceSelectScreen, a second device
-		// calibrated, preferred GUID changed) - close so the block below
-		// reopens on whatever WheelInput is actually reading now.
-		// equalsIgnoreCase, not equals - see WheelConfig's own doc comment on
-		// why every GUID comparison in this mod is case-insensitive (SDL's
-		// GUID string casing isn't guaranteed stable). enabledGuid comes from
-		// a saved profile.guid and activeGuid from live SDL enumeration; an
-		// equals() mismatch on nothing but casing would disable() and reopen
-		// the same device every single tick - the exact 20Hz DirectInput
-		// open/close storm ENABLE_ARM_DELAY_NANOS exists to prevent.
+		// 이미 열려있던 핸들의 대상 장치가 바뀌었으면 닫아서 아래에서 새로 연다
+		// (GUID 비교는 항상 equalsIgnoreCase - 대소문자 차이만으로 매 틱 재오픈 storm이 나면 안 된다)
 		if (enabled && enabledGuid != null && !enabledGuid.equalsIgnoreCase(WheelInput.activeGuid)) {
 			disable("active wheel changed to " + WheelInput.activeGuid);
 		}
 		boolean alreadyFailed = profile != null && profile.guid != null && profile.guid.equalsIgnoreCase(failedGuid);
 		if (WheelInput.available) {
-			// Restart the settle window whenever the target device changes, not
-			// just on disable(): opening a device for haptics while SDL is still
-			// re-enumerating from the *previous* device's open/close is exactly
-			// the reentrancy this delay exists to avoid, and a switch churns the
-			// device list just as much as a fresh connect does.
+			// 대상 장치가 바뀔 때마다 안정화 대기 창을 다시 잰다 (전환도 연결만큼 SDL 재열거를 유발함)
 			if (availableSinceNanos < 0 || !java.util.Objects.equals(armedGuid, WheelInput.activeGuid)) {
 				availableSinceNanos = System.nanoTime();
 				armedGuid = WheelInput.activeGuid;
 			}
-			// SdlJoystickReader having actually settled on this same device is
-			// the signal that its own open/close churn is done - opening a
-			// second (haptic) handle before then is what the arm delay is
-			// really guarding against, so check it rather than only the clock.
+			// SdlJoystickReader가 같은 장치로 실제로 안정됐는지도 함께 확인한다
 			boolean readerSettled = WheelInput.activeGuid != null
 					&& WheelInput.activeGuid.equalsIgnoreCase(SdlJoystickReader.openGuid());
 			boolean settled = System.nanoTime() - availableSinceNanos >= ENABLE_ARM_DELAY_NANOS;
-			// WheelInput.tick() freezes steering/available/activeGuid while the
-			// calibration screen is up rather than fighting it for the SDL
-			// joystick handle (see that class's own comment on this) - but that
-			// freeze can leave WheelInput.available sitting true from just before
-			// the screen opened. Without this check, re-calibrating the
-			// already-active wheel would open a second (haptic) handle onto a
-			// device the wizard is mid-recalibration on, then immediately stop it
-			// again a few lines below - opening for nothing and fighting the
-			// wizard for the reader's handle in between.
+			// 보정 화면이 떠있는 동안은 WheelInput이 상태를 얼려두므로 available이
+			// 그대로 true일 수 있다 - 재보정 중인 장치에 별도 haptic 핸들을 여는 걸 막는다
 			boolean calibrating = Minecraft.getInstance().screen instanceof WheelCalibrationScreen;
 			if (settled && readerSettled && !calibrating && !enabled && !alreadyFailed) {
 				enable();
 			}
 		} else {
-			// disable() only runs (and clears failedGuid) when enabled was
-			// true; a device whose enable() itself failed leaves enabled
-			// false forever, so failedGuid needs clearing here too - on
-			// disconnect, regardless of whether we ever got as far as
-			// "enabled" - or a later reconnect of the same GUID would never
-			// get a fresh attempt for the rest of the session.
 			failedGuid = null;
 			if (enabled) disable("wheel no longer available");
-			// After disable(), so the settle delay is measured from the
-			// reconnect rather than from this disconnect.
 			availableSinceNanos = -1;
 		}
 
 		if (!enabled || handle < 0) return;
 
-		// Don't fight the player's hand while they're deliberately holding
-		// the wheel at a lock/reference point during calibration. Checked
-		// fresh from the live screen each tick (rather than a manually
-		// toggled suspend/resume flag) so there's no way for output to get
-		// stuck off if the calibration screen ever closes through a path
-		// that skips its normal onClose().
+		// 보정 중에 손으로 기준점을 잡고 있는 동안은 힘으로 방해하지 않는다.
+		// 화면 진입 시 한 번만 stop()을 호출하고 매 틱 반복하지 않는다 (반복 호출이 크래시 원인)
 		if (Minecraft.getInstance().screen instanceof WheelCalibrationScreen) {
-			// Issued once on entry, not every tick the screen stays open -
-			// this class's own comments elsewhere (pulse()'s PULSE_COOLDOWN_NANOS,
-			// enable()'s ENABLE_ARM_DELAY_NANOS) are all about the same lesson
-			// learned the hard way on this SDL2/DirectInput stack: rapid
-			// repeated native calls into it are what actually crashes it, not
-			// a single call. A calibration session can sit on one step for
-			// minutes, which used to mean stop() at the client's full 20 Hz
-			// tick rate for that whole span.
 			if (!stoppedForCalibration) {
 				try {
 					SdlForceFeedback.mcrider_ffb_stop(handle);
@@ -476,22 +297,13 @@ public final class WheelForceFeedback {
 		}
 		stoppedForCalibration = false;
 
-		float steering = WheelInput.steering; // -1 (left) .. 1 (right)
+		float steering = WheelInput.steering; // -1 (좌) .. 1 (우)
 
 		float magnitude;
 		float direction;
 		if (tiresBrokenLoose) {
-			// Centering (the self-aligning pull grip normally provides)
-			// drops out - a real slide gives no restoring torque back
-			// through the wheel - but the soft-lock wall is a mechanical
-			// end-stop on the rig itself, not a grip effect, so it still
-			// applies once the wheel is cranked past the configured lock.
-			// steerOverTravel already ramps 0..1 past that lock (see
-			// WheelInput.computeOverTravel()) with no centering baseline
-			// folded in here, unlike the non-drift branch below. Summed
-			// with gripVibrationMagnitude the same way that branch sums
-			// vibration onto centering, rather than rendered as a
-			// totally separate, unsigned buzz.
+			// 실제로 미끄러지면 자기 정렬 토크가 거의 없으므로 센터링은 빼고
+			// 소프트락 벽(기계적 끝단이라 그립과 무관)과 진동만 남긴다
 			float wallMagnitude = Math.min(1f, WheelInput.steerOverTravel * strengthMultiplier());
 			float wallSigned = steering >= 0 ? wallMagnitude : -wallMagnitude;
 
@@ -503,36 +315,25 @@ public final class WheelForceFeedback {
 			magnitude = Math.abs(netSigned);
 			direction = netSigned >= 0 ? 0f : 180f;
 		} else {
-			// Centering is computed first, as a signed value, regardless of
-			// grip vibration - direction=0 <-> sign +1 and direction=180 <->
-			// sign -1 (see mcrider_ffb_set_force's own sign convention), so
-			// this and the vibration's signed swing below can be summed into
-			// one net force instead of grip vibration replacing centering
-			// outright.
-			float centerMagnitude = Math.min(1f, Math.abs(steering) * STRENGTH);
-			// Soft lock: once the wheel is turned past the configured steering
-			// lock (only possible if that lock is narrower than the wheel's
-			// real physical range), ramp the centering force up to full
-			// strength so the end-stop feels like a hard physical wall.
+			// 아래는 처음부터 최종(배율 적용 후) 출력 공간에서 계산하고 ceiling으로 제한한다
+			float mult = strengthMultiplier();
+			float ceiling = Math.min(1f, mult);
+
+			// 센터링을 부호 있는 값으로 먼저 구해서 진동의 부호 있는 스윙과 합산할 수 있게 한다
+			float centerMagnitude = Math.min(ceiling * CENTER_MAGNITUDE_BUDGET, Math.abs(steering) * STRENGTH * mult);
+			// 소프트락: 설정된 락을 넘으면 이 설정의 ceiling까지 세게 밀어서 벽처럼 느껴지게 한다
 			float overTravel = WheelInput.steerOverTravel;
 			if (overTravel > 0f) {
-				centerMagnitude = centerMagnitude + (1f - centerMagnitude) * overTravel;
+				centerMagnitude = centerMagnitude + (ceiling - centerMagnitude) * overTravel;
 			}
 			if (extraResistance) {
-				centerMagnitude = Math.min(1f, centerMagnitude + EXTRA_RESISTANCE_BOOST);
+				centerMagnitude = Math.min(ceiling, centerMagnitude + EXTRA_RESISTANCE_BOOST * mult);
 			}
-			centerMagnitude = Math.min(1f, centerMagnitude * strengthMultiplier());
 			float centerSigned = steering >= 0 ? centerMagnitude : -centerMagnitude;
 
 			if (gripVibrationMagnitude > 0f) {
-				// This is the ramped, still-gripping case (XP bar declining
-				// toward a slide, but state-drift not actually confirmed yet -
-				// see TireGripFeedback) - overlaid on top of centering rather
-				// than replacing it, since the tires haven't really broken
-				// loose here. Summing the vibration's signed swing onto
-				// centerSigned keeps some pull toward center alive underneath
-				// the buzz.
-				float vibMagnitude = Math.min(1f, gripVibrationMagnitude * strengthMultiplier());
+				// 아직 완전히 미끄러지진 않고 XP 게이지만 줄어드는 단계 - 센터링 위에 덧씌운다
+				float vibMagnitude = Math.min(1f, gripVibrationMagnitude * mult);
 				vibrationPhaseTicks++;
 				boolean phaseHigh = (vibrationPhaseTicks / VIBRATION_HALF_PERIOD_TICKS) % 2 == 0;
 				float vibSigned = phaseHigh ? vibMagnitude : -vibMagnitude;
@@ -541,10 +342,7 @@ public final class WheelForceFeedback {
 				direction = netSigned >= 0 ? 0f : 180f;
 			} else {
 				magnitude = centerMagnitude;
-				// Push opposite to the turn direction so the wheel self-centers
-				// instead of reinforcing the turn - measured against the real
-				// device, this is the correct sign (do not "simplify" back to
-				// matching steering's sign without retesting on hardware).
+				// 조향 반대 방향으로 밀어야 자연스럽게 센터링된다 (실측으로 확인된 부호, 함부로 뒤집지 말 것)
 				direction = steering >= 0 ? 0f : 180f;
 			}
 		}
@@ -552,22 +350,8 @@ public final class WheelForceFeedback {
 			int result = SdlForceFeedback.mcrider_ffb_set_force(handle, magnitude, direction);
 
 			if (result == 0) {
-				// Prefer restarting right as the wheel passes back through
-				// center - magnitude is ~0 there, so the restart's brief
-				// stop+run blip is effectively unfelt, unlike restarting on a
-				// blind timer while the player is actively holding a turn
-				// (which was felt as a slight catch every 15s). Edge-triggered
-				// (only on the tick the wheel *enters* the center zone, not
-				// every tick spent parked there) so it can't fire dozens of
-				// times a second while idling at center.
-				//
-				// Edge-triggering alone still wasn't a rate limit: real driving
-				// crosses the center zone repeatedly (a slalom does it several
-				// times a second), and each crossing was a blocking DirectInput
-				// Stop+Run round trip on the render thread. RESTART_MIN_INTERVAL_TICKS
-				// caps that - the effect only needs restarting often enough to
-				// stay under the device's ~60-70s cutoff, so anything past one
-				// restart per 15s is pure cost for no benefit.
+				// 조향이 중앙을 지나는 순간(magnitude가 거의 0일 때) 재시작해야
+				// stop+run의 짧은 끊김이 안 느껴진다. 너무 자주 재시작하지 않도록 최소 간격도 둔다
 				boolean nearCenter = Math.abs(WheelInput.steering) <= CENTER_RESET_DEADZONE;
 				restartTicks++;
 				boolean centerCrossing = nearCenter && !wasNearCenter;
@@ -580,18 +364,8 @@ public final class WheelForceFeedback {
 			}
 
 			if (result != 0) {
-				// DirectInput can silently drop/un-acquire the device outside
-				// of the alt-tab case this class already handles (e.g. a
-				// focus blip shorter than one client tick, which our own
-				// windowActive polling never observes as a transition) -
-				// once that happens every future set_force call just keeps
-				// failing with enabled/handle otherwise looking fine, and
-				// forceLoggedOnce used to silence all but the very first
-				// such failure, so this could die completely silently.
-				// Reacting here - logging every time, and forcing the same
-				// close+reopen that alt-tab-recovery already relies on -
-				// means a fresh reconnect attempt happens automatically
-				// instead of requiring the player to alt-tab to notice.
+				// DirectInput이 조용히 장치를 놓아버리면 이후 모든 set_force가 계속 실패하므로
+				// 매번 로그를 남기고 재오픈을 강제해서 자동으로 재연결을 시도하게 한다
 				WheelClientMain.LOGGER.warn("[FFB] set_force failed: {} - closing device so it reopens fresh", SdlForceFeedback.mcrider_ffb_last_error());
 				disable("set_force failed");
 			} else if (!forceLoggedOnce) {
@@ -603,39 +377,14 @@ public final class WheelForceFeedback {
 		}
 	}
 
-	// This is the actual fix for force feedback silently dying after roughly
-	// a minute: confirmed by testing (a standalone harness with zero
-	// Minecraft/JVM/GLFW involvement) that a single
-	// long-lived effect instance, only ever adjusted in place via
-	// SDL_HapticUpdateEffect, dies on its own after ~60-70s regardless of
-	// caller - almost certainly a firmware/driver-level max-continuous-
-	// output safety cutoff that in-place parameter updates don't reset,
-	// since it's still "the same effect" from the device's point of view.
-	// A genuine Stop()+Run() on that same effect, well under that window,
-	// was confirmed by testing to prevent it indefinitely with no device
-	// close/reopen - much cheaper than the full joystick+haptic reacquire
-	// below, which is reserved for focus-regain and outright set_force
-	// failures.
-	//
-	// Restarting on a blind timer while the wheel was actively held in a
-	// turn was still felt as a slight catch every interval (magnitude isn't
-	// near 0 then), so this instead prefers restarting the moment the wheel
-	// passes back through center - see the nearCenter check above. The
-	// fixed-interval restart only exists as a fallback for the edge case of
-	// the wheel being held off-center continuously with no center crossing
-	// to piggyback on; kept comfortably under the ~60-70s failure window.
-	private static final float CENTER_RESET_DEADZONE = 0.05f; // |steering| below this counts as "at center" - magnitude here is negligible, so the restart blip isn't felt
-	// Floor on how often a center crossing may actually spend a restart. Both
-	// this and the fallback stay well under the ~60-70s cutoff, so the worst
-	// case gap between restarts is still the fallback's 30s.
-	private static final int RESTART_MIN_INTERVAL_TICKS = 300; // 15s at the 20Hz client tick
-	private static final int RESTART_FALLBACK_TICKS = 600; // 30s at the 20Hz client tick
+	// 약 60~70초 후 힘 피드백이 조용히 죽는 문제의 실제 해결책 - UpdateEffect만으로는
+	// 리셋되지 않는 펌웨어/드라이버 수준의 연속 출력 컷오프로 추정되며, Stop()+Run()이면
+	// 방지된다는 걸 실측으로 확인했다. 조향이 홀딩된 채로 있어도 최소 간격/폴백 간격으로 재시작한다
+	private static final float CENTER_RESET_DEADZONE = 0.05f;
+	private static final int RESTART_MIN_INTERVAL_TICKS = 300; // 20Hz 기준 15초
+	private static final int RESTART_FALLBACK_TICKS = 600; // 20Hz 기준 30초
 	private static int restartTicks;
 	private static boolean wasNearCenter = true;
-	// True once mcrider_ffb_stop() has actually been issued for the
-	// calibration screen currently up - see tick()'s own use of this. Reset
-	// back to false the moment the screen isn't up anymore, so the next time
-	// it opens gets a fresh stop() call.
 	private static boolean stoppedForCalibration;
 
 	private static void periodicRestart() {
